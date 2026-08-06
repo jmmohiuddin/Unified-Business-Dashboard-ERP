@@ -17,7 +17,9 @@ const NAV = [
   { href: "/inventory", label: "Inventory", icon: "◷", permission: "stock:read" },
   { href: "/crm", label: "Customers", icon: "◰", permission: "party:read" },
   { href: "/compliance", label: "Compliance", icon: "⬡", permission: "settings:read" },
-  { href: "/assistant", label: "Ask Nexus", icon: "✦", permission: "ai:ask" },
+  // AI assistant temporarily disabled — no ANTHROPIC_API_KEY provisioned yet.
+  // Re-enable by restoring this entry and removing the redirect in assistant/page.tsx.
+  // { href: "/assistant", label: "Ask Nexus", icon: "✦", permission: "ai:ask" },
 ];
 
 async function signOut() {

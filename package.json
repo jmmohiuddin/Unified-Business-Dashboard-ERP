@@ -8,7 +8,7 @@
     "apps/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": "22.x"
   },
   "scripts": {
     "setup": "npm install && npm run db:create && npm run db:push && npm run db:rls && npm run db:seed",

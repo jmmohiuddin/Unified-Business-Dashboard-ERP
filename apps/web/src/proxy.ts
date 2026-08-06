@@ -3,9 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 /**
  * Security headers.
  *
- * Applied in middleware rather than per-route so a new page cannot ship without
- * them — the same reasoning as generating RLS policies from the schema. A
- * header you have to remember to add is a header you will eventually forget.
+ * Applied in proxy (the Next 16 rename of middleware) rather than per-route so a
+ * new page cannot ship without them — the same reasoning as generating RLS
+ * policies from the schema. A header you have to remember to add is a header you
+ * will eventually forget.
  *
  * Runs on the edge runtime, so nothing here may touch the database.
  */
@@ -37,7 +38,7 @@ function buildCsp(nonce: string): string {
   ].join("; ");
 }
 
-export function middleware(request: NextRequest) {
+export function proxy(request: NextRequest) {
   const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
 
   const requestHeaders = new Headers(request.headers);
