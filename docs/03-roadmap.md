@@ -19,7 +19,7 @@ effort estimates. If it is one person, roughly double.
 - Semantic metric layer: 21 typed, permission-checked metrics
 - Deterministic seed: 7 businesses, 200 days, 3,366 documents, 22,781 journal lines
 - Dashboard, portfolio and receivables screens; design system with dark mode
-- 229-check verification suite: metric snapshots, transactional write layer, end-to-end, and a 68-check security regression net
+- 227-check verification suite: metric snapshots, transactional write layer, end-to-end, and a 68-check security regression net
 - Write layer: payments, bills, invoices, POS, credit notes and refunds, stock counts, bookings, jobs, cheques — transactional, idempotent, audited
 - Security: argon2id, TOTP MFA, rate limiting, field-level PII encryption with key rotation, encrypted backups, right-to-erasure
 - Notifications inbox, token-authenticated public API, daily executive briefing

@@ -143,7 +143,7 @@ async function main() {
     "/compliance", "/rentals", "/rentals?filter=vacant", "/rentals/cheques",
     "/rentals/cheques?filter=bounced", "/salon", "/inventory", "/inventory?filter=low",
     "/accounting/vat", "/accounting/profit-loss", "/accounting/profit-loss?period=ytd",
-    "/hr/gratuity", "/assistant", "/purchases", "/inbox", "/settings/security",
+    "/hr/gratuity", "/purchases", "/inbox", "/settings/security",
   ];
   for (const path of PAGES) {
     const r = await get(path, owner.token);
@@ -228,9 +228,15 @@ async function main() {
   const crmPage = (await get("/crm", owner.token)).html;
   check("CRM shows cross-business relationships", /Across 2\+ businesses/.test(crmPage));
 
-  const asst = (await get("/assistant", owner.token)).html;
-  check("assistant lists the metrics it can reach", /What it can reach/.test(asst));
-  check("assistant states it has no SQL access", /no SQL access/.test(asst));
+  // The AI assistant is temporarily disabled (no ANTHROPIC_API_KEY provisioned).
+  // Assert the disable is clean — a redirect to the dashboard, not a broken page
+  // or a half-rendered feature. Restore the content checks when it is re-enabled.
+  const asst = await get("/assistant", owner.token);
+  check(
+    "disabled assistant redirects to the dashboard",
+    [302, 307, 308].includes(asst.status) && (asst.location ?? "").endsWith("/"),
+    `status ${asst.status} → ${asst.location}`,
+  );
 
   const purchases = (await get("/purchases", owner.token)).html;
   check("purchases page shows what is owed to suppliers", /Owed to suppliers/.test(purchases));

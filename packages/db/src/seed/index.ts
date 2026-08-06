@@ -1459,8 +1459,27 @@ async function main() {
   ]);
 
   // A demo API token for the owner, so the /api/v1 suite has a credential.
-  // The plaintext is fixed ONLY in the seed; real tokens are random and shown once.
-  {
+  //
+  // NEVER minted outside development. The plaintext is a constant in this file,
+  // which is committed to a public repository — a bearer token is checked before
+  // login, MFA and the rate limiter, so seeding it into a reachable deployment
+  // hands full owner access to anyone who can read the source. The e2e suite
+  // needs it and only ever runs against localhost, so gate it on NODE_ENV and
+  // let the suite fail loudly anywhere else rather than create a live backdoor.
+  // The gate is the database HOST, not NODE_ENV. NODE_ENV is unset on a laptop,
+  // so a NODE_ENV check would happily mint the token while seeding a cloud
+  // database from a developer machine — which is precisely how this token first
+  // reached a live deployment. "Is the target localhost?" is the question that
+  // actually protects the deployment.
+  const seedTarget = process.env.DATABASE_URL ?? "";
+  const targetHost = (() => {
+    try { return new URL(seedTarget).hostname; } catch { return ""; }
+  })();
+  const isLocalTarget = ["localhost", "127.0.0.1", "::1", "host.docker.internal"].includes(targetHost);
+
+  if (!isLocalTarget || process.env.SEED_DEMO_TOKEN === "false") {
+    console.log(`· Skipping the demo API token — target is "${targetHost || "unknown"}", not localhost.`);
+  } else {
     const { createHash } = await import("node:crypto");
     const demoToken = "nxk_demo_seed_token_do_not_use_in_prod";
     await db.insert(s.apiTokens).values({

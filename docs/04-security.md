@@ -228,6 +228,28 @@ identical to `DATABASE_URL`, which would run the app as the table owner and make
 every RLS policy a no-op. Development warns instead of crashing, so a fresh
 clone still runs.
 
+### Seed credentials never reach a remote database
+The seed mints a fixed-plaintext API token so the `/api/v1` suite has something
+to authenticate with. That constant lives in a committed, publicly readable
+file, and a bearer token is resolved *before* login, MFA and the rate limiter —
+so seeding it into any reachable deployment publishes full owner access.
+
+This is not hypothetical: it happened to this project. The demo token was seeded
+into the live Neon database and, for a short window, `Authorization: Bearer
+nxk_demo_…` returned all 122 owner permissions from the public URL. It has been
+revoked, and the seed now refuses to create it unless the target database host
+is `localhost`.
+
+The gate is deliberately on the **database host**, not `NODE_ENV`. `NODE_ENV` is
+unset on a developer laptop, so a `NODE_ENV !== "production"` check would have
+cheerfully minted the token while seeding a cloud database from that laptop —
+exactly the path that caused the incident. "Am I pointed at localhost?" is the
+question that actually protects the deployment; "am I in production?" is not.
+
+The same reasoning applies to the demo passwords (`demo1234`). They are fine on
+a laptop and unacceptable on anything reachable. A deployment carrying seed data
+is a demo, and should be treated as public.
+
 ### Security event stream
 Structured JSON on stdout, one object per line, ingestible by any shipper
 without an agent. Records what was *attempted*, not just what changed — a
