@@ -10,3 +10,4 @@ build/
 coverage/
 packages/db/drizzle/meta/_journal.json.bak
 backups/
+.vercel
