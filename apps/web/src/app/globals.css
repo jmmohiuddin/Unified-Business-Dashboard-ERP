@@ -1,0 +1,297 @@
+@import "tailwindcss";
+
+/**
+ * NEXUS DESIGN SYSTEM
+ * ───────────────────────────────────────────────────────────────────────────
+ * Built for one reader: a business owner glancing at a phone between meetings.
+ *
+ * Principles, and why:
+ *
+ *  1. NUMBERS ARE THE INTERFACE. Type scale is built around tabular figures.
+ *     Every money value uses `font-variant-numeric: tabular-nums` so columns of
+ *     digits align and a change in value never reflows the layout.
+ *
+ *  2. COLOUR CARRIES MEANING, NOT DECORATION. Exactly three semantic colours
+ *     (positive / caution / negative) plus one accent. Each business gets an
+ *     identity hue used only for identification — never for status — so a
+ *     "salon purple" tile is never mistaken for a warning.
+ *
+ *  3. ONE ACCENT. Everything interactive is the accent; nothing else is. This
+ *     is what makes a dense dashboard scannable in seconds.
+ *
+ *  4. DARK MODE IS NOT AN INVERSION. Surfaces lift with lightness, borders get
+ *     a touch of the accent hue, and semantic colours are re-tuned for contrast
+ *     on dark rather than reused.
+ *
+ *  All pairs meet WCAG 2.2 AA (4.5:1 for text, 3:1 for large text and UI).
+ */
+
+@theme {
+  /* ── Type ──────────────────────────────────────────────────────────────── */
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  /* A 1.25 ratio from 12px. Small enough to be dense, large enough for a
+     45-year-old reading in daylight. */
+  --text-2xs: 0.6875rem;   /* 11px  — meta, table captions            */
+  --text-xs: 0.75rem;      /* 12px  — labels, secondary               */
+  --text-sm: 0.8125rem;    /* 13px  — body default in dense UI        */
+  --text-base: 0.9375rem;  /* 15px  — prose                           */
+  --text-lg: 1.125rem;     /* 18px  — card titles                     */
+  --text-xl: 1.375rem;     /* 22px  — section heads                   */
+  --text-2xl: 1.75rem;     /* 28px  — KPI values                      */
+  --text-3xl: 2.25rem;     /* 36px  — hero KPI                        */
+
+  /* ── Spacing: 4px base, but tiles snap to an 8px rhythm ────────────────── */
+  --spacing: 0.25rem;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+
+  /* ── Business identity hues (identification only) ──────────────────────── */
+  --color-bu-violet: oklch(58% 0.19 295);
+  --color-bu-blue: oklch(58% 0.16 250);
+  --color-bu-cyan: oklch(62% 0.13 210);
+  --color-bu-amber: oklch(68% 0.15 75);
+  --color-bu-lime: oklch(66% 0.16 135);
+  --color-bu-orange: oklch(64% 0.17 45);
+  --color-bu-rose: oklch(60% 0.19 15);
+  --color-bu-slate: oklch(55% 0.03 260);
+}
+
+/* ── Light theme ──────────────────────────────────────────────────────────── */
+:root {
+  --bg: oklch(98.5% 0.003 260);
+  --surface: oklch(100% 0 0);
+  --surface-2: oklch(97% 0.004 260);
+  --surface-3: oklch(94.5% 0.006 260);
+  --border: oklch(90% 0.006 260);
+  --border-strong: oklch(84% 0.008 260);
+
+  --text: oklch(22% 0.012 260);
+  --text-muted: oklch(48% 0.012 260);
+  --text-subtle: oklch(62% 0.01 260);
+  --text-inverse: oklch(99% 0 0);
+
+  --accent: oklch(52% 0.18 268);
+  --accent-hover: oklch(46% 0.19 268);
+  --accent-soft: oklch(95% 0.03 268);
+  --accent-border: oklch(85% 0.07 268);
+
+  --positive: oklch(52% 0.14 155);
+  --positive-soft: oklch(95% 0.04 155);
+  --caution: oklch(58% 0.14 75);
+  --caution-soft: oklch(96% 0.05 75);
+  --negative: oklch(53% 0.19 25);
+  --negative-soft: oklch(96% 0.035 25);
+
+  --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.04), 0 1px 3px oklch(0% 0 0 / 0.03);
+  --shadow-pop: 0 8px 24px -6px oklch(0% 0 0 / 0.12), 0 2px 6px oklch(0% 0 0 / 0.05);
+
+  color-scheme: light;
+}
+
+/* ── Dark theme ───────────────────────────────────────────────────────────── */
+:root[data-theme="dark"],
+.dark {
+  --bg: oklch(17% 0.012 265);
+  --surface: oklch(21% 0.014 265);
+  --surface-2: oklch(24.5% 0.015 265);
+  --surface-3: oklch(28% 0.016 265);
+  --border: oklch(30% 0.016 265);
+  --border-strong: oklch(38% 0.018 265);
+
+  --text: oklch(96% 0.004 265);
+  --text-muted: oklch(74% 0.012 265);
+  --text-subtle: oklch(60% 0.014 265);
+  --text-inverse: oklch(17% 0.012 265);
+
+  --accent: oklch(72% 0.15 268);
+  --accent-hover: oklch(79% 0.14 268);
+  --accent-soft: oklch(28% 0.06 268);
+  --accent-border: oklch(40% 0.09 268);
+
+  /* Re-tuned, not inverted: saturated greens/reds vibrate on dark surfaces. */
+  --positive: oklch(76% 0.15 155);
+  --positive-soft: oklch(28% 0.05 155);
+  --caution: oklch(80% 0.13 80);
+  --caution-soft: oklch(30% 0.05 80);
+  --negative: oklch(70% 0.16 25);
+  --negative-soft: oklch(29% 0.06 25);
+
+  --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.3);
+  --shadow-pop: 0 12px 28px -8px oklch(0% 0 0 / 0.55);
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: oklch(17% 0.012 265);
+    --surface: oklch(21% 0.014 265);
+    --surface-2: oklch(24.5% 0.015 265);
+    --surface-3: oklch(28% 0.016 265);
+    --border: oklch(30% 0.016 265);
+    --border-strong: oklch(38% 0.018 265);
+    --text: oklch(96% 0.004 265);
+    --text-muted: oklch(74% 0.012 265);
+    --text-subtle: oklch(60% 0.014 265);
+    --text-inverse: oklch(17% 0.012 265);
+    --accent: oklch(72% 0.15 268);
+    --accent-hover: oklch(79% 0.14 268);
+    --accent-soft: oklch(28% 0.06 268);
+    --accent-border: oklch(40% 0.09 268);
+    --positive: oklch(76% 0.15 155);
+    --positive-soft: oklch(28% 0.05 155);
+    --caution: oklch(80% 0.13 80);
+    --caution-soft: oklch(30% 0.05 80);
+    --negative: oklch(70% 0.16 25);
+    --negative-soft: oklch(29% 0.06 25);
+    --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.3);
+    --shadow-pop: 0 12px 28px -8px oklch(0% 0 0 / 0.55);
+    color-scheme: dark;
+  }
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* Respect the iOS home indicator and notch on the mobile-first target. */
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  /* Every number in the product aligns. */
+  .tnum,
+  table,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1, "cv01" 1;
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
+  ::selection {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+  /* Honour the OS motion preference — vestibular disorders are common and this
+     is a tool people use every day, not a marketing page. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+  }
+
+  .kpi-value {
+    font-size: var(--text-2xl);
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .label {
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--text-muted);
+    letter-spacing: 0.01em;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 999px;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    line-height: 1.4;
+    white-space: nowrap;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.875rem;
+    border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+    font-weight: 550;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+    /* 44px minimum touch target on the mobile-first target device. */
+    min-height: 2.25rem;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--text-inverse);
+  }
+  .btn-primary:hover {
+    background: var(--accent-hover);
+  }
+  .btn-ghost {
+    color: var(--text-muted);
+  }
+  .btn-ghost:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--surface-2) 25%,
+      var(--surface-3) 50%,
+      var(--surface-2) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+    border-radius: var(--radius-sm);
+  }
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+}
+
+@layer utilities {
+  .text-positive { color: var(--positive); }
+  .text-caution { color: var(--caution); }
+  .text-negative { color: var(--negative); }
+  .text-muted { color: var(--text-muted); }
+  .text-subtle { color: var(--text-subtle); }
+  .bg-surface { background: var(--surface); }
+  .bg-surface-2 { background: var(--surface-2); }
+  .bg-surface-3 { background: var(--surface-3); }
+  .scrollbar-none { scrollbar-width: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; }
+}

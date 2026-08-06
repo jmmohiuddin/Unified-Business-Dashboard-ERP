@@ -1,0 +1,32 @@
+{
+  "name": "@nexus/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts"
+  },
+  "scripts": {
+    "db:push": "drizzle-kit push --force",
+    "generate": "drizzle-kit generate",
+    "studio": "drizzle-kit studio",
+    "rls": "tsx src/apply-rls.ts",
+    "seed": "tsx src/seed/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.45.2",
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@nexus/core": "*",
+    "@node-rs/argon2": "^2.0.2",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,392 @@
+import { relations, sql } from "drizzle-orm";
+import {
+  boolean,
+  date,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  time,
+  timestamp,
+  uniqueIndex,
+  uuid,
+  varchar,
+} from "drizzle-orm/pg-core";
+import {
+  attendanceStatus,
+  commissionBasis,
+  employmentStatus,
+  payBasis,
+} from "./_enums.ts";
+import { metadata, money, pk, qty, rate, timestamps } from "./_shared.ts";
+import { businessUnits, locations, tenants } from "./tenancy.ts";
+import { parties } from "./parties.ts";
+import { users } from "./identity.ts";
+
+/**
+ * Employee is a *role* a party plays, not a separate person record — same
+ * reasoning as customers/suppliers. A barber who also rents a shop from the
+ * owner must not be two humans in this database.
+ *
+ * `userId` is nullable on purpose: most field staff and barbers will never log
+ * in. Requiring a user account per employee is a classic ERP mistake that makes
+ * payroll depend on IT onboarding.
+ */
+export const employees = pgTable(
+  "employees",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    partyId: uuid("party_id").references(() => parties.id, { onDelete: "set null" }),
+    userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
+    /** Home business; `employeeAssignments` allows working across businesses. */
+    primaryBusinessUnitId: uuid("primary_business_unit_id")
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: "restrict" }),
+    locationId: uuid("location_id").references(() => locations.id, { onDelete: "set null" }),
+
+    employeeCode: varchar("employee_code", { length: 30 }).notNull(),
+    fullName: varchar("full_name", { length: 200 }).notNull(),
+    designation: varchar("designation", { length: 100 }),
+    department: varchar("department", { length: 100 }),
+    phone: varchar("phone", { length: 40 }),
+    email: varchar("email", { length: 320 }),
+    nationalId: varchar("national_id", { length: 60 }),
+    photoUrl: text("photo_url"),
+
+    status: employmentStatus("status").notNull().default("active"),
+    joinedOn: date("joined_on").notNull(),
+    probationEndsOn: date("probation_ends_on"),
+    leftOn: date("left_on"),
+
+    payBasis: payBasis("pay_basis").notNull().default("monthly"),
+
+    /**
+     * UAE salary structure. The split is NOT cosmetic.
+     *
+     * End-of-service gratuity is calculated on BASIC salary only, not total
+     * package. A business that stores one lumped "salary" figure cannot compute
+     * its gratuity liability, which for a company with long-serving staff is one
+     * of the largest numbers on its balance sheet — and one that owners are
+     * routinely shocked by when someone resigns.
+     */
+    baseSalary: money("base_salary").notNull().default("0"),
+    housingAllowance: money("housing_allowance").notNull().default("0"),
+    transportAllowance: money("transport_allowance").notNull().default("0"),
+    otherAllowance: money("other_allowance").notNull().default("0"),
+    hourlyRate: money("hourly_rate"),
+    /** Additional contractual components kept as data so payroll rules differ
+     *  per country without a code change. */
+    payComponents: jsonb("pay_components").notNull().default(sql`'[]'::jsonb`),
+
+    /**
+     * Accrued end-of-service gratuity (Federal Decree-Law 33 of 2021, art. 51):
+     * 21 days' basic wage per year for the first five years, 30 days per year
+     * thereafter, capped at two years' total wage. Recalculated nightly and
+     * posted as a provision, because it is a liability that accrues every single
+     * day whether or not anyone is looking at it.
+     */
+    gratuityAccrued: money("gratuity_accrued").notNull().default("0"),
+    gratuityAsOf: date("gratuity_as_of"),
+
+    /** WPS (Wage Protection System) — salaries must be paid through an approved
+     *  agent and reported to MOHRE, or the establishment is blocked from issuing
+     *  new work permits. These fields are what the SIF export needs.
+     *  The IBAN is encrypted; the routing code is a public bank identifier. */
+    wpsPersonId: varchar("wps_person_id", { length: 20 }),
+    wpsRoutingCode: varchar("wps_routing_code", { length: 20 }),
+    ibanEnc: text("iban_enc"),
+    ibanHint: varchar("iban_hint", { length: 16 }),
+
+    /**
+     * Residency and labour documents.
+     *
+     * The identifiers themselves are ENCRYPTED at rest (AES-256-GCM, see
+     * packages/core/src/security/pii.ts). An Emirates ID, a passport number and
+     * an IBAN together are enough to attempt identity fraud, and RLS does
+     * nothing against a stolen backup or a support engineer with psql.
+     *
+     * Each protected field is three columns:
+     *   `_enc`  the envelope, including the key id so keys can be rotated
+     *   `_bidx` a keyed HMAC for exact lookup — encrypted columns cannot be
+     *           queried with `=`, and a deterministic cipher would leak equality
+     *   `_hint` a masked last-four for display, so a list screen never has to
+     *           decrypt hundreds of rows to render `••••1234`
+     *
+     * The expiry DATES are deliberately left in plaintext: they drive the
+     * compliance watchlist and are not identifying on their own.
+     */
+    emiratesIdEnc: text("emirates_id_enc"),
+    emiratesIdBidx: varchar("emirates_id_bidx", { length: 32 }),
+    emiratesIdHint: varchar("emirates_id_hint", { length: 16 }),
+
+    visaNumberEnc: text("visa_number_enc"),
+    visaExpiry: date("visa_expiry"),
+
+    labourCardEnc: text("labour_card_number_enc"),
+    labourCardExpiry: date("labour_card_expiry"),
+
+    passportNumberEnc: text("passport_number_enc"),
+    passportNumberBidx: varchar("passport_number_bidx", { length: 32 }),
+    passportNumberHint: varchar("passport_number_hint", { length: 16 }),
+    passportExpiry: date("passport_expiry"),
+
+    nationality: varchar("nationality", { length: 60 }),
+
+    /** Field-service dispatch inputs. */
+    isFieldStaff: boolean("is_field_staff").notNull().default(false),
+    skills: jsonb("skills").notNull().default(sql`'[]'::jsonb`),
+    homeLat: varchar("home_lat", { length: 24 }),
+    homeLng: varchar("home_lng", { length: 24 }),
+    /** Van/toolkit stock location for this technician. */
+    defaultWarehouseId: uuid("default_warehouse_id"),
+
+    /** Rolling performance rollups refreshed nightly. */
+    revenueMtd: money("revenue_mtd").notNull().default("0"),
+    jobsCompletedMtd: integer("jobs_completed_mtd").notNull().default(0),
+    avgCustomerRating: rate("avg_customer_rating"),
+    utilizationRate: rate("utilization_rate"),
+
+    emergencyContact: varchar("emergency_contact", { length: 200 }),
+    metadata: metadata(),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("employees_code_uq").on(t.tenantId, t.employeeCode),
+    index("employees_bu_status_idx").on(t.primaryBusinessUnitId, t.status),
+    index("employees_field_idx").on(t.tenantId, t.isFieldStaff),
+    // Blind indexes: exact lookup over encrypted identifiers. Unique on
+    // Emirates ID because two active employees cannot share one.
+    uniqueIndex("employees_emirates_id_bidx_uq").on(t.tenantId, t.emiratesIdBidx),
+    index("employees_passport_bidx").on(t.tenantId, t.passportNumberBidx),
+  ],
+);
+
+/** Lets one employee work in several businesses with a cost split. */
+export const employeeAssignments = pgTable(
+  "employee_assignments",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    businessUnitId: uuid("business_unit_id")
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: "cascade" }),
+    /** 0.6 = 60% of this person's cost is charged to that business. */
+    costAllocation: rate("cost_allocation").notNull().default("1"),
+    startsOn: date("starts_on"),
+    endsOn: date("ends_on"),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("employee_assignments_uq").on(t.employeeId, t.businessUnitId)],
+);
+
+export const attendance = pgTable(
+  "attendance",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    onDate: date("on_date").notNull(),
+    status: attendanceStatus("status").notNull().default("present"),
+    checkIn: time("check_in"),
+    checkOut: time("check_out"),
+    workedMinutes: integer("worked_minutes"),
+    overtimeMinutes: integer("overtime_minutes").notNull().default(0),
+    lateMinutes: integer("late_minutes").notNull().default(0),
+    /** Source matters for trust: a selfie+GPS punch is evidence, a manual entry
+     *  by the manager is an assertion. Payroll disputes hinge on this. */
+    source: varchar("source", { length: 20 }).notNull().default("manual"),
+    lat: varchar("lat", { length: 24 }),
+    lng: varchar("lng", { length: 24 }),
+    note: text("note"),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("attendance_uq").on(t.employeeId, t.onDate)],
+);
+
+export const leaveRequests = pgTable(
+  "leave_requests",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    leaveType: varchar("leave_type", { length: 40 }).notNull(),
+    startsOn: date("starts_on").notNull(),
+    endsOn: date("ends_on").notNull(),
+    days: qty("days").notNull(),
+    isPaid: boolean("is_paid").notNull().default(true),
+    status: varchar("status", { length: 20 }).notNull().default("pending"),
+    reason: text("reason"),
+    approvedByUserId: uuid("approved_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [index("leave_requests_emp_idx").on(t.employeeId, t.startsOn)],
+);
+
+export const payrollRuns = pgTable(
+  "payroll_runs",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    businessUnitId: uuid("business_unit_id").references(() => businessUnits.id, {
+      onDelete: "set null",
+    }),
+    periodLabel: varchar("period_label", { length: 20 }).notNull(),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    grossTotal: money("gross_total").notNull().default("0"),
+    deductionTotal: money("deduction_total").notNull().default("0"),
+    netTotal: money("net_total").notNull().default("0"),
+    employeeCount: integer("employee_count").notNull().default(0),
+    approvedByUserId: uuid("approved_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    paidOn: date("paid_on"),
+    journalId: uuid("journal_id"),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("payroll_runs_uq").on(t.tenantId, t.businessUnitId, t.periodLabel)],
+);
+
+export const payslips = pgTable(
+  "payslips",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    payrollRunId: uuid("payroll_run_id")
+      .notNull()
+      .references(() => payrollRuns.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "restrict" }),
+    baseAmount: money("base_amount").notNull().default("0"),
+    overtimeAmount: money("overtime_amount").notNull().default("0"),
+    commissionAmount: money("commission_amount").notNull().default("0"),
+    allowanceAmount: money("allowance_amount").notNull().default("0"),
+    deductionAmount: money("deduction_amount").notNull().default("0"),
+    advanceDeduction: money("advance_deduction").notNull().default("0"),
+    grossAmount: money("gross_amount").notNull().default("0"),
+    netAmount: money("net_amount").notNull().default("0"),
+    /** Full breakdown snapshot so a reprint years later is byte-identical. */
+    breakdown: metadata("breakdown"),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("payslips_uq").on(t.payrollRunId, t.employeeId)],
+);
+
+/**
+ * Commission rules. The salon runs on these (barbers take a cut of every
+ * service) and so does retail. Keeping them as rows with a scope means the
+ * owner can change Karim's rate for hair colouring without a deploy.
+ */
+export const commissionRules = pgTable(
+  "commission_rules",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    businessUnitId: uuid("business_unit_id")
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    basis: commissionBasis("basis").notNull().default("revenue_percent"),
+    rate: rate("rate").notNull().default("0"),
+    flatAmount: money("flat_amount"),
+    /** Narrowing scope: null = applies to everything at this level. */
+    employeeId: uuid("employee_id").references(() => employees.id, { onDelete: "cascade" }),
+    itemId: uuid("item_id"),
+    categoryId: uuid("category_id"),
+    /** Tiers: [{ from: 0, to: 50000, rate: 0.05 }, ...] */
+    tiers: jsonb("tiers").notNull().default(sql`'[]'::jsonb`),
+    minTargetAmount: money("min_target_amount"),
+    priority: integer("priority").notNull().default(100),
+    isActive: boolean("is_active").notNull().default(true),
+    ...timestamps,
+  },
+  (t) => [index("commission_rules_bu_idx").on(t.businessUnitId, t.isActive)],
+);
+
+export const commissionEntries = pgTable(
+  "commission_entries",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    ruleId: uuid("rule_id").references(() => commissionRules.id, { onDelete: "set null" }),
+    sourceTable: varchar("source_table", { length: 63 }).notNull(),
+    sourceId: uuid("source_id").notNull(),
+    baseAmount: money("base_amount").notNull(),
+    commissionAmount: money("commission_amount").notNull(),
+    earnedOn: date("earned_on").notNull(),
+    payslipId: uuid("payslip_id").references(() => payslips.id, { onDelete: "set null" }),
+    isPaid: boolean("is_paid").notNull().default(false),
+    ...timestamps,
+  },
+  (t) => [
+    index("commission_entries_emp_idx").on(t.employeeId, t.earnedOn),
+    index("commission_entries_unpaid_idx").on(t.tenantId, t.isPaid),
+  ],
+);
+
+/** Salary advances — ubiquitous in this market and a real cash-flow drain if
+ *  untracked. Deducted automatically at the next payroll run. */
+export const salaryAdvances = pgTable(
+  "salary_advances",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "cascade" }),
+    amount: money("amount").notNull(),
+    outstanding: money("outstanding").notNull(),
+    issuedOn: date("issued_on").notNull(),
+    monthlyDeduction: money("monthly_deduction").notNull(),
+    reason: text("reason"),
+    approvedByUserId: uuid("approved_by_user_id"),
+    ...timestamps,
+  },
+  (t) => [index("salary_advances_emp_idx").on(t.employeeId)],
+);
+
+export const employeesRelations = relations(employees, ({ one, many }) => ({
+  party: one(parties, { fields: [employees.partyId], references: [parties.id] }),
+  businessUnit: one(businessUnits, {
+    fields: [employees.primaryBusinessUnitId],
+    references: [businessUnits.id],
+  }),
+  assignments: many(employeeAssignments),
+  attendance: many(attendance),
+}));

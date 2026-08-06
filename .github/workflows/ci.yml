@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+# The workflow deliberately runs the WHOLE suite, including the security
+# regression tests, on every pull request. A security check that only runs
+# when someone remembers to run it is not a control.
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: nexus
+          POSTGRES_DB: nexus
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U nexus"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://nexus:nexus@127.0.0.1:5432/nexus
+      APP_DATABASE_URL: postgresql://nexus_app:nexus_app@127.0.0.1:5432/nexus
+      # CI-only values. Real deployments read these from a secret manager.
+      AUTH_SECRET: ci-only-secret-that-is-long-enough-to-pass-validation-0123456789
+      PII_ENCRYPTION_KEYS: '{"1":"Y2ktb25seS10ZXN0LWtleS0zMi1ieXRlcy1sb25nISE="}'
+      PII_ACTIVE_KEY_ID: "1"
+      BACKUP_ENCRYPTION_KEY: ci-only-backup-key
+      NEXUS_DEMO_TODAY: "2026-08-06"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci --no-audit --no-fund
+
+      # Vulnerable dependencies are a supply-chain problem, not a nice-to-have.
+      # Fails the build on high or critical.
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: Type-check and build
+        run: npm run build
+
+      - name: Prepare database
+        run: |
+          npm run db:push
+          npm run db:rls
+          npm run db:seed
+
+      # RLS coverage is asserted by db:rls itself, which exits non-zero if any
+      # tenant-scoped table lacks an enforced policy.
+      - name: Metric snapshots
+        run: npm run test:metrics
+
+      - name: Write layer
+        run: npm run test:writes
+
+      - name: Start application
+        run: |
+          npm run start &
+          npx wait-on http://localhost:3100/login --timeout 60000
+
+      - name: End-to-end
+        run: npm run test:e2e
+
+      - name: Security regression suite
+        run: npm run test:security
+
+      - name: Daily briefing composes
+        run: npm run briefing
+
+      - name: Backup and restore drill
+        run: npm run backup:verify

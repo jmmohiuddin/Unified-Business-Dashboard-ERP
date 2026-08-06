@@ -1,0 +1,46 @@
+{
+  "name": "nexus-erp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Unified multi-business operating system",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "npm install && npm run db:create && npm run db:push && npm run db:rls && npm run db:seed",
+    "db:create": "node scripts/create-db.mjs",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:push": "npm run db:push -w @nexus/db",
+    "db:rls": "npm run rls -w @nexus/db",
+    "db:seed": "npm run seed -w @nexus/db",
+    "db:studio": "npm run studio -w @nexus/db",
+    "db:reset": "node scripts/create-db.mjs --drop && npm run db:push && npm run db:rls && npm run db:seed",
+    "dev": "npm run dev -w @nexus/web",
+    "build": "npm run build -w @nexus/web",
+    "start": "npm run start -w @nexus/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test:metrics": "npm run smoke -w @nexus/core",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test": "npm run test:metrics && npm run test:writes && npm run test:e2e && npm run test:security",
+    "automations": "npm run automations -w @nexus/core --",
+    "outbox": "npm run outbox -w @nexus/core --",
+    "backup": "node scripts/backup.mjs",
+    "backup:verify": "node scripts/backup.mjs --verify",
+    "test:writes": "npm run test:writes -w @nexus/core",
+    "keygen": "npm run keygen -w @nexus/core",
+    "audit": "npm audit --audit-level=high",
+    "pii:rotate": "npm run pii:rotate -w @nexus/core --",
+    "test:security": "node scripts/security-test.mjs",
+    "briefing": "npm run briefing -w @nexus/core --"
+  },
+  "devDependencies": {
+    "dotenv": "^17.2.3",
+    "postgres": "^3.4.9",
+    "typescript": "^5.9.3"
+  }
+}

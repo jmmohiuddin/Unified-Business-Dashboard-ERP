@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexus_pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: nexus
+      POSTGRES_DB: nexus
+    ports:
+      - "55432:5432"
+    volumes:
+      - nexus_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nexus -d nexus"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: nexus_redis
+    restart: unless-stopped
+    ports:
+      - "56379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - nexus_redisdata:/data
+
+volumes:
+  nexus_pgdata:
+  nexus_redisdata:
