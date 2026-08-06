@@ -74,14 +74,24 @@ export const GLOBAL_TABLES = [
   "audit_log",
 ];
 
-export function buildRlsStatements(appRole = "nexus_app"): string[] {
+export function buildRlsStatements(
+  appRole = "nexus_app",
+  appPassword = appRole,
+): string[] {
   const stmts: string[] = [];
 
+  // Password is parameterised so managed providers with a strength policy
+  // (Neon, Supabase, RDS with rds-force-ssl-pwd) can be given a real password
+  // via APP_ROLE_PASSWORD. The default reproduces the original local-dev
+  // behaviour so nothing changes for a laptop install.
+  const escapedPw = appPassword.replace(/'/g, "''");
   stmts.push(`
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '${appRole}') THEN
-        CREATE ROLE ${appRole} LOGIN PASSWORD '${appRole}';
+        CREATE ROLE ${appRole} LOGIN PASSWORD '${escapedPw}';
+      ELSE
+        ALTER ROLE ${appRole} WITH LOGIN PASSWORD '${escapedPw}';
       END IF;
     END $$;
   `);

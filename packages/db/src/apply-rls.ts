@@ -13,7 +13,9 @@ const sql = postgres(url, { max: 1, onnotice: () => {} });
 async function main() {
   console.log(`Securing ${TENANT_SCOPED_TABLES.length} tenant-scoped tables…`);
 
-  const statements = buildRlsStatements();
+  const appRole = process.env.APP_ROLE ?? "nexus_app";
+  const appPassword = process.env.APP_ROLE_PASSWORD ?? appRole;
+  const statements = buildRlsStatements(appRole, appPassword);
   let applied = 0;
   for (const stmt of statements) {
     try {
