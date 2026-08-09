@@ -35,7 +35,7 @@ npm test           # 227 checks: metrics, writes, end-to-end, security
 
 | | |
 |---|---|
-| **94 tables** | 88 tenant-isolated + 6 global, across 10 bounded contexts |
+| **95 tables** | 89 tenant-isolated + 6 global, across 10 bounded contexts |
 | **Tenant isolation** | PostgreSQL RLS, `FORCE`d, generated from the schema — cross-tenant read *and* write proven blocked |
 | **Double-entry ledger** | 28,077 journal lines, balance enforced by a database trigger |
 | **26 metrics** | Typed, permission-checked semantic layer — full dashboard sweep in **~150 ms** |
@@ -125,6 +125,7 @@ rounding rules, one permission check and one audit path.
 
 | | |
 |---|---|
+| **[★ Product & Technical Master Document](docs/PRODUCT-TECHNICAL-MASTER.md)** | **Single source of truth** — PRD, personas, design spec, architecture, audit, debt registers, roadmap |
 | [00 — Strategy](docs/00-strategy.md) | Where the brief is wrong, what is missing, what to drop |
 | [01 — Architecture](docs/01-architecture.md) | Stack choices with the alternatives they beat |
 | [02 — Data model](docs/02-data-model.md) | ER diagrams, unification decisions, DB-enforced invariants |
