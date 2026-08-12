@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import * as M from "../money/index.ts";
 import {
   ServiceError,
   nextDocumentNumber,
@@ -80,10 +81,25 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
       SELECT COALESCE(SUM(total), 0) AS credited FROM documents
        WHERE source_document_id = ${input.invoiceId}::uuid AND doc_type = 'credit_note'
     `);
-    const alreadyCredited = Number(prior?.credited ?? 0);
+    const alreadyCredited = M.fromDb(prior?.credited);
 
     // Build the credit lines.
-    let creditLines: NonNullable<z.infer<typeof createCreditNoteInput>["lines"]>;
+    /**
+     * Numeric fields accept a string so values read straight out of Postgres
+     * keep their exact decimal text. Passing them through Number() first is
+     * lossless for numeric(18,4) in realistic ranges, but it is an avoidable
+     * float hop in the one file whose whole job is reversing money.
+     */
+    type CreditLine = Omit<
+      NonNullable<z.infer<typeof createCreditNoteInput>["lines"]>[number],
+      "quantity" | "unitPrice" | "taxRate" | "unitCost"
+    > & {
+      quantity: string | number;
+      unitPrice: string | number;
+      taxRate: string | number;
+      unitCost?: string | number | null;
+    };
+    let creditLines: CreditLine[];
     if (input.full) {
       const original = await ctx.tx.execute<{
         item_id: string | null; description: string; quantity: string;
@@ -95,10 +111,10 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
       creditLines = original.map((l) => ({
         itemId: l.item_id,
         description: l.description,
-        quantity: Number(l.quantity),
-        unitPrice: Number(l.unit_price),
-        taxRate: Number(l.tax_rate),
-        unitCost: Number(l.unit_cost),
+        quantity: l.quantity,
+        unitPrice: l.unit_price,
+        taxRate: l.tax_rate,
+        unitCost: l.unit_cost,
         restockWarehouseId: null,
       }));
     } else {
@@ -106,20 +122,29 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
       creditLines = input.lines;
     }
 
-    let subtotal = 0, taxTotal = 0, costTotal = 0;
+    let subtotal = M.ZERO, taxTotal = M.ZERO, costTotal = M.ZERO;
     for (const l of creditLines) {
       // Invoice prices are VAT-inclusive at retail; the credit mirrors that.
-      const gross = l.quantity * l.unitPrice;
-      const net = l.taxRate > 0 ? gross / (1 + l.taxRate) : gross;
-      subtotal += net;
-      taxTotal += gross - net;
-      costTotal += l.quantity * (l.unitCost ?? 0);
+      // gross / (1 + rate) never terminates in binary at 5%, so tax is taken as
+      // the REMAINDER — net + tax === gross exactly, per line.
+      const gross = M.quantize(M.mul(M.money(l.quantity), M.money(l.unitPrice)));
+      const rate = M.money(l.taxRate);
+      const net = M.gt(rate, M.ZERO)
+        ? M.quantize(M.div(gross, M.add(M.money(1), rate)))
+        : gross;
+      subtotal = M.add(subtotal, net);
+      taxTotal = M.add(taxTotal, M.sub(gross, net));
+      costTotal = M.add(costTotal, M.quantize(M.mul(M.money(l.quantity), M.money(l.unitCost ?? 0))));
     }
-    const total = subtotal + taxTotal;
+    const total = M.add(subtotal, taxTotal);
 
-    if (alreadyCredited + total > Number(inv.total) + 0.01) {
+    // Exact. The `+ 0.01` here was the clearest tell in the codebase: a
+    // hand-rolled fils of slack on an over-credit guard, which let N successive
+    // credit notes over-credit an invoice by up to N fils — and `alreadyCredited`
+    // was itself a float sum of prior float totals.
+    if (M.gt(M.add(alreadyCredited, total), M.fromDb(inv.total))) {
       throw new ServiceError(
-        `Crediting ${total.toFixed(2)} would exceed the invoice (already credited ${alreadyCredited.toFixed(2)} of ${Number(inv.total).toFixed(2)}).`,
+        `Crediting ${M.toDisplay(total)} would exceed the invoice (already credited ${M.toDisplay(alreadyCredited)} of ${M.toDisplay(M.fromDb(inv.total))}).`,
         "invalid",
       );
     }
@@ -139,8 +164,8 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
         (gen_random_uuid(), ${ctx.tenantId}::uuid, ${inv.business_unit_id}::uuid,
          'credit_note', ${docNumber}, 'confirmed', 'in',
          ${inv.party_id}::uuid, ${inv.party_name_snapshot}, ${ctx.today}::date, ${ctx.baseCurrency},
-         ${subtotal.toFixed(4)}, ${taxTotal.toFixed(4)}, ${total.toFixed(4)}, '0',
-         ${total.toFixed(4)}, ${costTotal.toFixed(4)}, ${input.invoiceId}::uuid,
+         ${M.toDb(subtotal)}, ${M.toDb(taxTotal)}, ${M.toDb(total)}, '0',
+         ${M.toDb(total)}, ${M.toDb(costTotal)}, ${input.invoiceId}::uuid,
          ${`Credit for ${inv.doc_number}: ${input.reason}`}, now())
       RETURNING id
     `);
@@ -154,10 +179,10 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
            quantity, unit_price, tax_rate, tax_amount, line_total, unit_cost)
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${cn.id}::uuid, ${lineNo},
-           ${l.itemId ?? null}::uuid, ${l.description}, ${l.quantity.toFixed(4)},
-           ${l.unitPrice.toFixed(4)}, ${l.taxRate.toFixed(6)},
-           ${(l.quantity * l.unitPrice * (l.taxRate / (1 + l.taxRate))).toFixed(4)},
-           ${(l.quantity * l.unitPrice).toFixed(4)}, ${(l.unitCost ?? 0).toFixed(4)})
+           ${l.itemId ?? null}::uuid, ${l.description}, ${M.toDb(M.money(l.quantity))},
+           ${M.toDb(M.money(l.unitPrice))}, ${M.money(l.taxRate).toFixed(6)},
+           ${M.toDb(M.sub(M.quantize(M.mul(M.money(l.quantity), M.money(l.unitPrice))), M.gt(M.money(l.taxRate), M.ZERO) ? M.quantize(M.div(M.quantize(M.mul(M.money(l.quantity), M.money(l.unitPrice))), M.add(M.money(1), M.money(l.taxRate)))) : M.quantize(M.mul(M.money(l.quantity), M.money(l.unitPrice)))))},
+           ${M.toDb(M.quantize(M.mul(M.money(l.quantity), M.money(l.unitPrice))))}, ${M.toDb(M.money(l.unitCost ?? 0))})
       `);
 
       // Returned goods go back into stock.
@@ -168,11 +193,11 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
              unit_cost, reason, source_table, source_id, occurred_at)
           VALUES
             (gen_random_uuid(), ${ctx.tenantId}::uuid, ${inv.business_unit_id}::uuid,
-             ${l.restockWarehouseId}::uuid, ${l.itemId}::uuid, ${l.quantity.toFixed(4)},
-             ${(l.unitCost ?? 0).toFixed(4)}, 'return_in', 'documents', ${cn.id}::uuid, now())
+             ${l.restockWarehouseId}::uuid, ${l.itemId}::uuid, ${M.toDb(M.money(l.quantity))},
+             ${M.toDb(M.money(l.unitCost ?? 0))}, 'return_in', 'documents', ${cn.id}::uuid, now())
         `);
         await ctx.tx.execute(sql`
-          UPDATE stock_levels SET on_hand = on_hand + ${l.quantity.toFixed(4)}, updated_at = now()
+          UPDATE stock_levels SET on_hand = on_hand + ${M.toDb(M.money(l.quantity))}, updated_at = now()
            WHERE warehouse_id = ${l.restockWarehouseId}::uuid AND item_id = ${l.itemId}::uuid
         `);
       }
@@ -187,13 +212,13 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
       narration: `Credit note ${docNumber} against ${inv.doc_number}`,
       legs: [
         { accountKey: "REV_PRODUCT", businessUnitId: inv.business_unit_id, debit: subtotal },
-        ...(taxTotal > 0
+        ...(M.gt(taxTotal, M.ZERO)
           ? [{ accountKey: "VAT_OUTPUT", businessUnitId: inv.business_unit_id, debit: taxTotal }]
           : []),
         { accountKey: "AR", businessUnitId: inv.business_unit_id, credit: total, partyId: inv.party_id },
       ],
     });
-    if (costTotal > 0) {
+    if (M.gt(costTotal, M.ZERO)) {
       // Goods came back: reverse the cost of sale.
       await postJournal(ctx, {
         postingDate: ctx.today,
@@ -209,15 +234,15 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
     }
 
     // ── Settle the credit against the invoice ───────────────────────────────
-    const outstanding = Number(inv.total) - Number(inv.amount_paid);
-    const appliedToInvoice = Math.min(total, Math.max(0, outstanding));
-    const refundable = total - appliedToInvoice;
+    const outstanding = M.sub(M.fromDb(inv.total), M.fromDb(inv.amount_paid));
+    const appliedToInvoice = M.min(total, M.max(M.ZERO, outstanding));
+    const refundable = M.sub(total, appliedToInvoice);
 
-    if (appliedToInvoice > 0) {
+    if (M.gt(appliedToInvoice, M.ZERO)) {
       await ctx.tx.execute(sql`
         UPDATE documents
-           SET amount_due = GREATEST(0, amount_due - ${appliedToInvoice.toFixed(4)}),
-               status = CASE WHEN amount_due - ${appliedToInvoice.toFixed(4)} <= 0.01
+           SET amount_due = GREATEST(0, amount_due - ${M.toDb(appliedToInvoice)}),
+               status = CASE WHEN amount_due - ${M.toDb(appliedToInvoice)} <= 0
                              THEN 'paid'::doc_status ELSE status END,
                updated_at = now()
          WHERE id = ${input.invoiceId}::uuid
@@ -226,7 +251,7 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
 
     // Money already paid, now owed back.
     let refundPaymentId: string | null = null;
-    if (refundable > 0.01 && input.refundMethod !== "credit_on_account") {
+    if (M.gt(refundable, M.ZERO) && input.refundMethod !== "credit_on_account") {
       const payNumber = await nextDocumentNumber(ctx, inv.business_unit_id, "payment", `REFUND-${bu!.code}`);
       const [refund] = await ctx.tx.execute<{ id: string }>(sql`
         INSERT INTO payments
@@ -236,7 +261,7 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${inv.business_unit_id}::uuid,
            ${payNumber}, 'out', ${inv.party_id}::uuid, ${input.refundMethod}::payment_method,
-           ${refundable.toFixed(4)}, ${ctx.baseCurrency}, ${refundable.toFixed(4)}, '0',
+           ${M.toDb(refundable)}, ${ctx.baseCurrency}, ${M.toDb(refundable)}, '0',
            ${ctx.today}::date, ${`Refund for ${docNumber}`}, ${ctx.principal.userId}::uuid, now(),
            ${input.reason})
         RETURNING id
@@ -259,8 +284,8 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
     if (inv.party_id) {
       await ctx.tx.execute(sql`
         UPDATE parties
-           SET open_balance = GREATEST(0, open_balance - ${appliedToInvoice.toFixed(4)}),
-               lifetime_value = GREATEST(0, lifetime_value - ${total.toFixed(4)})
+           SET open_balance = GREATEST(0, open_balance - ${M.toDb(appliedToInvoice)}),
+               lifetime_value = GREATEST(0, lifetime_value - ${M.toDb(total)})
          WHERE id = ${inv.party_id}::uuid
       `);
     }
@@ -271,8 +296,9 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
       entityId: cn.id,
       businessUnitId: inv.business_unit_id,
       diff: {
-        docNumber, against: inv.doc_number, total, reason: input.reason,
-        appliedToInvoice, refunded: refundPaymentId ? refundable : 0,
+        docNumber, against: inv.doc_number, total: M.toDb(total), reason: input.reason,
+        appliedToInvoice: M.toDb(appliedToInvoice),
+        refunded: M.toDb(refundPaymentId ? refundable : M.ZERO),
         refundMethod: input.refundMethod,
       },
     });
@@ -280,10 +306,12 @@ export async function createCreditNote(ctx: ServiceContext, raw: unknown) {
     return {
       creditNoteId: cn.id,
       docNumber,
-      total,
-      appliedToInvoice,
-      refunded: refundPaymentId ? refundable : 0,
-      creditOnAccount: input.refundMethod === "credit_on_account" ? refundable : 0,
+      total: M.toNumber(total),
+      appliedToInvoice: M.toNumber(appliedToInvoice),
+      refunded: M.toNumber(refundPaymentId ? refundable : M.ZERO),
+      creditOnAccount: M.toNumber(
+        input.refundMethod === "credit_on_account" ? refundable : M.ZERO,
+      ),
     };
   });
 }
