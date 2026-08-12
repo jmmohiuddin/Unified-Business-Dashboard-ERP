@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import * as M from "../money/index.ts";
 import {
   ServiceError,
   nextDocumentNumber,
@@ -73,7 +74,9 @@ export async function createPurchaseOrder(ctx: ServiceContext, raw: unknown) {
     `);
     if (!supplier) throw new ServiceError("Supplier not found.", "not_found");
 
-    const subtotal = input.lines.reduce((t, l) => t + l.quantity * l.unitCost, 0);
+    const subtotal = M.quantize(
+      M.sum(input.lines.map((l) => M.quantize(M.mul(M.money(l.quantity), M.money(l.unitCost))))),
+    );
     const docNumber = await nextDocumentNumber(ctx, input.businessUnitId, "purchase_order", `PO-${bu.code}`);
 
     const [doc] = await ctx.tx.execute<{ id: string }>(sql`
@@ -86,8 +89,8 @@ export async function createPurchaseOrder(ctx: ServiceContext, raw: unknown) {
          'purchase_order', ${docNumber}, 'draft', 'out',
          ${input.supplierId}::uuid, ${supplier.display_name}, ${input.issueDate}::date,
          ${input.expectedDate ?? null}::date, ${ctx.baseCurrency},
-         ${subtotal.toFixed(4)}, '0', ${subtotal.toFixed(4)}, '0',
-         ${subtotal.toFixed(4)}, ${subtotal.toFixed(4)}, ${input.notes ?? null})
+         ${M.toDb(subtotal)}, '0', ${M.toDb(subtotal)}, '0',
+         ${M.toDb(subtotal)}, ${M.toDb(subtotal)}, ${input.notes ?? null})
       RETURNING id
     `);
 
@@ -100,9 +103,9 @@ export async function createPurchaseOrder(ctx: ServiceContext, raw: unknown) {
            quantity, unit_price, line_total, unit_cost)
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${doc.id}::uuid, ${lineNo},
-           ${line.itemId}::uuid, ${line.description ?? ""}, ${line.quantity.toFixed(4)},
-           ${line.unitCost.toFixed(4)}, ${(line.quantity * line.unitCost).toFixed(4)},
-           ${line.unitCost.toFixed(4)})
+           ${line.itemId}::uuid, ${line.description ?? ""}, ${M.toDb(M.money(line.quantity))},
+           ${M.toDb(M.money(line.unitCost))}, ${M.toDb(M.quantize(M.mul(M.money(line.quantity), M.money(line.unitCost))))},
+           ${M.toDb(M.money(line.unitCost))})
       `);
     }
 
@@ -111,10 +114,10 @@ export async function createPurchaseOrder(ctx: ServiceContext, raw: unknown) {
       entityTable: "documents",
       entityId: doc.id,
       businessUnitId: input.businessUnitId,
-      diff: { docNumber, supplier: supplier.display_name, total: subtotal },
+      diff: { docNumber, supplier: supplier.display_name, total: M.toDb(subtotal) },
     });
 
-    return { documentId: doc.id, docNumber, total: subtotal };
+    return { documentId: doc.id, docNumber, total: M.toNumber(subtotal) };
   });
 }
 
@@ -188,8 +191,14 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
       defaultWarehouseId = wh?.id ?? null;
     }
 
-    let subtotal = 0, taxTotal = 0, inputVatRecoverable = 0, inputVatIrrecoverable = 0;
-    const priced: { line: (typeof input.lines)[number]; net: number; vat: number; recoverable: boolean }[] = [];
+    let subtotal = M.ZERO, taxTotal = M.ZERO;
+    let inputVatRecoverable = M.ZERO, inputVatIrrecoverable = M.ZERO;
+    const priced: {
+      line: (typeof input.lines)[number];
+      net: M.Money;
+      vat: M.Money;
+      recoverable: boolean;
+    }[] = [];
 
     // Whether input VAT is recoverable depends on what the business SUPPLIES.
     // A purchase serving exempt residential rent cannot reclaim its input VAT.
@@ -199,17 +208,20 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
     const servesExemptSupplies = buKind?.kind === "rental";
 
     for (const line of input.lines) {
-      const net = line.quantity * line.unitCost;
-      const vat = net * line.vatRate;
-      subtotal += net;
-      taxTotal += vat;
+      // Rounded per line, because that is the granularity the line is stored
+      // at. Summing unrounded lines and rounding once at the end yields a total
+      // the printed line items visibly do not add up to.
+      const net = M.quantize(M.mul(M.money(line.quantity), M.money(line.unitCost)));
+      const vat = M.quantize(M.mul(net, M.money(line.vatRate)));
+      subtotal = M.add(subtotal, net);
+      taxTotal = M.add(taxTotal, vat);
       const recoverable = !servesExemptSupplies;
-      if (recoverable) inputVatRecoverable += vat;
-      else inputVatIrrecoverable += vat;
+      if (recoverable) inputVatRecoverable = M.add(inputVatRecoverable, vat);
+      else inputVatIrrecoverable = M.add(inputVatIrrecoverable, vat);
       priced.push({ line, net, vat, recoverable });
     }
 
-    const total = subtotal + taxTotal;
+    const total = M.add(subtotal, taxTotal);
     const dueDate = new Date(`${input.billDate}T00:00:00Z`);
     dueDate.setUTCDate(dueDate.getUTCDate() + input.paymentTermDays);
 
@@ -226,8 +238,8 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
          'bill', ${docNumber}, 'confirmed', 'out',
          ${input.supplierId}::uuid, ${supplier.display_name}, ${input.billDate}::date,
          ${dueDate.toISOString().slice(0, 10)}::date, ${ctx.baseCurrency},
-         ${subtotal.toFixed(4)}, ${taxTotal.toFixed(4)}, ${total.toFixed(4)},
-         '0', ${total.toFixed(4)}, ${total.toFixed(4)}, ${subtotal.toFixed(4)},
+         ${M.toDb(subtotal)}, ${M.toDb(taxTotal)}, ${M.toDb(total)},
+         '0', ${M.toDb(total)}, ${M.toDb(total)}, ${M.toDb(subtotal)},
          ${input.purchaseOrderId ?? null}::uuid, now(),
          ${input.supplierReference ? `Supplier ref: ${input.supplierReference}` : null})
       RETURNING id
@@ -242,9 +254,9 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
            quantity, unit_price, tax_rate, tax_amount, line_total, unit_cost)
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${doc.id}::uuid, ${lineNo},
-           ${line.itemId}::uuid, ${line.description ?? ""}, ${line.quantity.toFixed(4)},
-           ${line.unitCost.toFixed(4)}, ${line.vatRate.toFixed(6)}, ${vat.toFixed(4)},
-           ${(net + vat).toFixed(4)}, ${line.unitCost.toFixed(4)})
+           ${line.itemId}::uuid, ${line.description ?? ""}, ${M.toDb(M.money(line.quantity))},
+           ${M.toDb(M.money(line.unitCost))}, ${line.vatRate.toFixed(6)}, ${M.toDb(vat)},
+           ${M.toDb(M.add(net, vat))}, ${M.toDb(M.money(line.unitCost))})
       `);
 
       // ── Receive stock and recompute moving-average cost ─────────────────
@@ -257,16 +269,16 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
                unit_cost, reason, source_table, source_id, occurred_at)
             VALUES
               (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.businessUnitId}::uuid,
-               ${warehouseId}::uuid, ${line.itemId}::uuid, ${line.quantity.toFixed(4)},
-               ${line.unitCost.toFixed(4)}, 'purchase', 'documents', ${doc.id}::uuid, now())
+               ${warehouseId}::uuid, ${line.itemId}::uuid, ${M.toDb(M.money(line.quantity))},
+               ${M.toDb(M.money(line.unitCost))}, 'purchase', 'documents', ${doc.id}::uuid, now())
           `);
 
           // Moving average: (old value + new value) ÷ (old qty + new qty). A
           // naive overwrite of cost would misstate COGS on every subsequent
           // sale. Parameters are cast to numeric so untyped-literal arithmetic
           // does not confuse the planner.
-          const qty = sql`${line.quantity.toFixed(4)}::numeric`;
-          const cost = sql`${line.unitCost.toFixed(4)}::numeric`;
+          const qty = sql`${M.toDb(M.money(line.quantity))}::numeric`;
+          const cost = sql`${M.toDb(M.money(line.unitCost))}::numeric`;
           // Update the existing variant-less level, or create it. ON CONFLICT is
           // avoided: NULL variant_id is distinct in a standard unique index, so
           // an upsert would insert a duplicate rather than update.
@@ -309,10 +321,10 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
     const legs: Parameters<typeof postJournal>[1]["legs"] = [
       { accountKey: debitTarget, businessUnitId: input.businessUnitId, debit: subtotal },
     ];
-    if (inputVatRecoverable > 0) {
+    if (M.gt(inputVatRecoverable, M.ZERO)) {
       legs.push({ accountKey: "VAT_INPUT", businessUnitId: input.businessUnitId, debit: inputVatRecoverable });
     }
-    if (inputVatIrrecoverable > 0) {
+    if (M.gt(inputVatIrrecoverable, M.ZERO)) {
       legs.push({ accountKey: "VAT_IRRECOVERABLE", businessUnitId: input.businessUnitId, debit: inputVatIrrecoverable });
     }
     legs.push({ accountKey: "AP", businessUnitId: input.businessUnitId, credit: total, partyId: input.supplierId });
@@ -348,9 +360,9 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
     return {
       documentId: doc.id,
       docNumber,
-      total,
-      inputVatRecoverable,
-      inputVatIrrecoverable,
+      total: M.toNumber(total),
+      inputVatRecoverable: M.toNumber(inputVatRecoverable),
+      inputVatIrrecoverable: M.toNumber(inputVatIrrecoverable),
     };
   });
 }
@@ -388,19 +400,23 @@ export async function payBill(ctx: ServiceContext, raw: unknown) {
     if (!bu) throw new ServiceError("Business not found.", "not_found");
 
     // Which bills to settle.
-    let targets: { documentId: string; amount: number }[] = [];
+    const amount = M.money(input.amount);
+    let targets: { documentId: string; amount: M.Money }[] = [];
     if (input.billId) {
       const [bill] = await ctx.tx.execute<{ amount_due: string }>(sql`
         SELECT amount_due FROM documents WHERE id = ${input.billId}::uuid FOR UPDATE
       `);
       if (!bill) throw new ServiceError("Bill not found.", "not_found");
-      if (input.amount > Number(bill.amount_due) + 0.005) {
+      // Exact. The `+ 0.005` slack existed to absorb float drift and had the
+      // side effect of permitting a half-fils over-payment.
+      const due = M.fromDb(bill.amount_due);
+      if (M.gt(amount, due)) {
         throw new ServiceError(
-          `Cannot pay ${input.amount.toFixed(2)} against a bill with only ${Number(bill.amount_due).toFixed(2)} outstanding.`,
+          `Cannot pay ${M.toDisplay(amount)} against a bill with only ${M.toDisplay(due)} outstanding.`,
           "invalid",
         );
       }
-      targets = [{ documentId: input.billId, amount: input.amount }];
+      targets = [{ documentId: input.billId, amount }];
     } else {
       const open = await ctx.tx.execute<{ id: string; amount_due: string }>(sql`
         SELECT id, amount_due FROM documents
@@ -410,16 +426,16 @@ export async function payBill(ctx: ServiceContext, raw: unknown) {
          ORDER BY due_date ASC NULLS LAST, issue_date ASC
          FOR UPDATE
       `);
-      let remaining = input.amount;
+      let remaining = amount;
       for (const b of open) {
-        if (remaining <= 0.005) break;
-        const take = Math.min(remaining, Number(b.amount_due));
+        if (!M.gt(remaining, M.ZERO)) break;
+        const take = M.min(remaining, M.fromDb(b.amount_due));
         targets.push({ documentId: b.id, amount: take });
-        remaining -= take;
+        remaining = M.sub(remaining, take);
       }
     }
 
-    const allocated = targets.reduce((t, x) => t + x.amount, 0);
+    const allocated = M.sum(targets.map((t) => t.amount));
     const paymentNumber = await nextDocumentNumber(ctx, input.businessUnitId, "payment", `PAYOUT-${bu.code}`);
 
     const [pay] = await ctx.tx.execute<{ id: string }>(sql`
@@ -430,8 +446,8 @@ export async function payBill(ctx: ServiceContext, raw: unknown) {
       VALUES
         (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.businessUnitId}::uuid,
          ${paymentNumber}, 'out', ${input.supplierId}::uuid, ${input.method}::payment_method,
-         ${input.amount.toFixed(4)}, ${ctx.baseCurrency}, ${input.amount.toFixed(4)},
-         ${(input.amount - allocated).toFixed(4)}, ${input.paidOn}::date, ${input.reference ?? null},
+         ${M.toDb(amount)}, ${ctx.baseCurrency}, ${M.toDb(amount)},
+         ${M.toDb(M.sub(amount, allocated))}, ${input.paidOn}::date, ${input.reference ?? null},
          ${ctx.principal.userId}::uuid, now())
       RETURNING id
     `);
@@ -439,13 +455,19 @@ export async function payBill(ctx: ServiceContext, raw: unknown) {
     for (const t of targets) {
       await ctx.tx.execute(sql`
         INSERT INTO payment_allocations (id, tenant_id, payment_id, document_id, amount)
-        VALUES (gen_random_uuid(), ${ctx.tenantId}::uuid, ${pay.id}::uuid, ${t.documentId}::uuid, ${t.amount.toFixed(4)})
+        VALUES (gen_random_uuid(), ${ctx.tenantId}::uuid, ${pay.id}::uuid, ${t.documentId}::uuid, ${M.toDb(t.amount)})
       `);
       await ctx.tx.execute(sql`
         UPDATE documents
-           SET amount_paid = amount_paid + ${t.amount.toFixed(4)},
-               amount_due  = GREATEST(0, total - (amount_paid + ${t.amount.toFixed(4)})),
-               status = CASE WHEN total - (amount_paid + ${t.amount.toFixed(4)}) <= 0.01
+           SET amount_paid = amount_paid + ${M.toDb(t.amount)},
+               -- GREATEST(0, ...) is gone. It clamped a negative balance to zero,
+               -- which silently ABSORBED an over-payment instead of surfacing it
+               -- and destroyed the evidence that it happened. Over-allocation is
+               -- refused above, so a negative here means a real bug and should be
+               -- visible rather than swallowed.
+               amount_due  = total - (amount_paid + ${M.toDb(t.amount)}),
+               -- Exact: paid means paid, not "within a fils of paid".
+               status = CASE WHEN total - (amount_paid + ${M.toDb(t.amount)}) <= 0
                              THEN 'paid'::doc_status ELSE 'partially_paid'::doc_status END,
                updated_at = now()
          WHERE id = ${t.documentId}::uuid
@@ -473,6 +495,6 @@ export async function payBill(ctx: ServiceContext, raw: unknown) {
       diff: { paymentNumber, amount: input.amount, method: input.method, bills: targets.length },
     });
 
-    return { paymentId: pay.id, paymentNumber, allocated };
+    return { paymentId: pay.id, paymentNumber, allocated: M.toNumber(allocated) };
   });
 }
