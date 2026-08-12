@@ -1,6 +1,18 @@
 import { sql } from "drizzle-orm";
 import type { Tx } from "@nexus/db";
 import { assertCan, canAccessBusinessUnit, ForbiddenError, type Principal } from "../rbac.ts";
+import { ZERO, eq, money, quantize, sum, toDb, toDisplay, type Money } from "../money/index.ts";
+
+/**
+ * Coerce a journal leg amount to Money.
+ *
+ * Accepts `number` during the migration so services can be converted one at a
+ * time, but the value becomes exact the instant it crosses this boundary and is
+ * never arithmetic'd as a float again. Once every caller passes Money the
+ * `number` arm can be dropped and the lint rule in CI will keep it that way.
+ */
+const legAmount = (v: Money | number | string | undefined | null): Money =>
+  v === undefined || v === null ? ZERO : money(v);
 
 /**
  * SERVICE LAYER FOUNDATION.
@@ -202,8 +214,9 @@ export async function postJournal(
     legs: {
       accountKey: string;
       businessUnitId?: string | null;
-      debit?: number;
-      credit?: number;
+      /** Money, or anything Money can be constructed from. Never a computed float. */
+      debit?: Money | number | string;
+      credit?: Money | number | string;
       partyId?: string | null;
       memo?: string;
     }[];
@@ -211,11 +224,25 @@ export async function postJournal(
 ): Promise<string> {
   await assertPeriodOpen(ctx, entry.postingDate);
 
-  const debits = entry.legs.reduce((t, l) => t + (l.debit ?? 0), 0);
-  const credits = entry.legs.reduce((t, l) => t + (l.credit ?? 0), 0);
-  if (Math.abs(debits - credits) > 0.005) {
+  /**
+   * The balance gate.
+   *
+   * This was `Math.abs(debits - credits) > 0.005` over float-accumulated legs —
+   * the single control guaranteeing the general ledger balances, expressed as a
+   * half-fils tolerance. A journal whose drift stayed under that posted
+   * *unbalanced*, and the imbalance was then written into numeric columns
+   * permanently.
+   *
+   * Now exact. The comparison is made at storage precision because that is what
+   * the database will actually hold and what its trigger will re-check —
+   * quantizing is not a tolerance, it is comparing the values that get written
+   * rather than intermediate ones.
+   */
+  const debits = quantize(sum(entry.legs.map((l) => legAmount(l.debit))));
+  const credits = quantize(sum(entry.legs.map((l) => legAmount(l.credit))));
+  if (!eq(debits, credits)) {
     throw new ServiceError(
-      `Journal does not balance: debit ${debits.toFixed(2)} vs credit ${credits.toFixed(2)}.`,
+      `Journal does not balance: debit ${toDisplay(debits)} vs credit ${toDisplay(credits)}.`,
       "invalid",
     );
   }
@@ -257,8 +284,8 @@ export async function postJournal(
       VALUES
         (gen_random_uuid(), ${ctx.tenantId}::uuid, ${journalId}::uuid, ${lineNo},
          ${byKey.get(leg.accountKey)!}::uuid, ${leg.businessUnitId ?? null}::uuid,
-         ${(leg.debit ?? 0).toFixed(4)}, ${(leg.credit ?? 0).toFixed(4)},
-         ${(leg.debit ?? 0).toFixed(4)}, ${(leg.credit ?? 0).toFixed(4)},
+         ${toDb(legAmount(leg.debit))}, ${toDb(legAmount(leg.credit))},
+         ${toDb(legAmount(leg.debit))}, ${toDb(legAmount(leg.credit))},
          ${ctx.baseCurrency}, ${leg.partyId ?? null}::uuid, ${leg.memo ?? null})
     `);
   }

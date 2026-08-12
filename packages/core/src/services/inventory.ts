@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import * as M from "../money/index.ts";
 import {
   ServiceError,
   postJournal,
@@ -48,17 +49,23 @@ export async function adjustStock(ctx: ServiceContext, raw: unknown) {
        WHERE warehouse_id = ${input.warehouseId}::uuid AND item_id = ${input.itemId}::uuid
        FOR UPDATE
     `);
-    const onHand = Number(level?.on_hand ?? 0);
-    const avgCost = Number(level?.avg_cost ?? 0);
-    const delta = input.countedQuantity - onHand;
+    const onHand = M.fromDb(level?.on_hand);
+    const avgCost = M.fromDb(level?.avg_cost);
+    const counted = M.money(input.countedQuantity);
+    const delta = M.quantize(M.sub(counted, onHand));
 
     // No variance, no work. Recording a zero-quantity move would just add noise
     // to the ledger the owner has to read.
-    if (Math.abs(delta) < 0.0001) {
+    //
+    // This was `Math.abs(delta) < 0.0001`. That is not a tolerance being
+    // removed — 0.0001 IS one unit at numeric(18,4), so "smaller than a storage
+    // unit" and "zero once quantized" are the same statement. It is said
+    // exactly now rather than approximately.
+    if (M.isZero(delta)) {
       return { itemId: input.itemId, delta: 0, varianceValue: 0, adjusted: false };
     }
 
-    const varianceValue = delta * avgCost;
+    const varianceValue = M.quantize(M.mul(delta, avgCost));
 
     await ctx.tx.execute(sql`
       INSERT INTO stock_moves
@@ -66,8 +73,8 @@ export async function adjustStock(ctx: ServiceContext, raw: unknown) {
          unit_cost, reason, occurred_at, note)
       VALUES
         (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.businessUnitId}::uuid,
-         ${input.warehouseId}::uuid, ${input.itemId}::uuid, ${delta.toFixed(4)},
-         ${avgCost.toFixed(4)}, ${input.reason === "count" ? "adjustment" : input.reason === "theft" || input.reason === "damage" ? "damage" : "adjustment"}::stock_move_reason,
+         ${input.warehouseId}::uuid, ${input.itemId}::uuid, ${M.toDb(delta)},
+         ${M.toDb(avgCost)}, ${input.reason === "count" ? "adjustment" : input.reason === "theft" || input.reason === "damage" ? "damage" : "adjustment"}::stock_move_reason,
          ${input.onDate}::timestamptz, ${input.note ?? `Stock ${input.reason}`})
     `);
 
@@ -77,7 +84,7 @@ export async function adjustStock(ctx: ServiceContext, raw: unknown) {
     // silently insert a duplicate rather than update.
     const updated = await ctx.tx.execute<{ id: string }>(sql`
       UPDATE stock_levels
-         SET on_hand = ${input.countedQuantity.toFixed(4)}, last_counted_at = now(), updated_at = now()
+         SET on_hand = ${M.toDb(counted)}, last_counted_at = now(), updated_at = now()
        WHERE warehouse_id = ${input.warehouseId}::uuid AND item_id = ${input.itemId}::uuid
          AND variant_id IS NULL
       RETURNING id
@@ -86,13 +93,17 @@ export async function adjustStock(ctx: ServiceContext, raw: unknown) {
       await ctx.tx.execute(sql`
         INSERT INTO stock_levels (id, tenant_id, warehouse_id, item_id, on_hand, avg_cost, last_counted_at)
         VALUES (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.warehouseId}::uuid,
-                ${input.itemId}::uuid, ${input.countedQuantity.toFixed(4)}, ${avgCost.toFixed(4)}, now())
+                ${input.itemId}::uuid, ${M.toDb(counted)}, ${M.toDb(avgCost)}, now())
       `);
     }
 
     // Ledger. A shortfall is an expense; a surplus reverses one. Either way the
     // inventory asset moves to match the count.
-    if (Math.abs(varianceValue) >= 0.01) {
+    // Post whenever the variance is non-zero at storage precision. The old
+    // `>= 0.01` skipped sub-fils variances, which quietly let the inventory
+    // asset drift out of agreement with the stock ledger it is supposed to
+    // mirror. If a move is worth recording, its value is worth posting.
+    if (!M.isZero(varianceValue)) {
       await postJournal(ctx, {
         postingDate: input.onDate,
         source: "stock",
@@ -100,10 +111,10 @@ export async function adjustStock(ctx: ServiceContext, raw: unknown) {
         sourceId: input.itemId,
         narration: `Stock ${input.reason} adjustment`,
         legs:
-          delta < 0
+          M.isNegative(delta)
             ? [
-                { accountKey: "OTHER_EXPENSE", businessUnitId: input.businessUnitId, debit: -varianceValue },
-                { accountKey: "INVENTORY", businessUnitId: input.businessUnitId, credit: -varianceValue },
+                { accountKey: "OTHER_EXPENSE", businessUnitId: input.businessUnitId, debit: M.neg(varianceValue) },
+                { accountKey: "INVENTORY", businessUnitId: input.businessUnitId, credit: M.neg(varianceValue) },
               ]
             : [
                 { accountKey: "INVENTORY", businessUnitId: input.businessUnitId, debit: varianceValue },
@@ -117,9 +128,15 @@ export async function adjustStock(ctx: ServiceContext, raw: unknown) {
       entityTable: "stock_levels",
       entityId: input.itemId,
       businessUnitId: input.businessUnitId,
-      diff: { was: onHand, now: input.countedQuantity, delta, varianceValue, reason: input.reason },
+      diff: { was: M.toDb(onHand), now: M.toDb(counted), delta: M.toDb(delta),
+              varianceValue: M.toDb(varianceValue), reason: input.reason },
     });
 
-    return { itemId: input.itemId, delta, varianceValue, adjusted: true };
+    return {
+      itemId: input.itemId,
+      delta: M.toNumber(delta),
+      varianceValue: M.toNumber(varianceValue),
+      adjusted: true,
+    };
   });
 }
