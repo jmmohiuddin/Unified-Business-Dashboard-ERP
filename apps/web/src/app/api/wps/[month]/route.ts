@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
 import { can, generateSif, tryDecryptPii, type WpsEmployee } from "@nexus/core";
 import { getSession } from "@/lib/session";
+import { rateLimit } from "@/lib/rate-limit";
 
 /**
  * WPS Salary Information File download.
@@ -19,12 +20,40 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ month: string }> },
 ) {
+  try {
+    return await handle(params);
+  } catch (err) {
+    // This endpoint decrypts IBANs. An unhandled throw here would surface a
+    // framework stack trace, and stack traces from this code path can carry
+    // query fragments and column names. Log server-side, return nothing useful.
+    console.error("[api/wps]", err);
+    return new Response("Could not generate the file", { status: 500 });
+  }
+}
+
+async function handle(params: Promise<{ month: string }>) {
   const session = await getSession();
   if (!session) return new Response("Unauthorized", { status: 401 });
 
   // Payroll data is sensitive; the same permission gates the HR screens.
   if (!can(session.principal, "payroll:read")) {
     return new Response("Forbidden", { status: 403 });
+  }
+
+  /**
+   * Rate limit.
+   *
+   * One request returns the decrypted IBAN of every employee, and the month is
+   * a free path parameter spanning 2018–2100 — ~1,000 distinct URLs. Without a
+   * limit a stolen session cookie could enumerate the lot at full speed. Keyed
+   * by user, not IP: the session is the thing being abused.
+   */
+  const limit = await rateLimit(`wps:${session.userId}`, 12, 60);
+  if (!limit.allowed) {
+    return new Response("Too many requests", {
+      status: 429,
+      headers: { "Retry-After": String(limit.retryAfterSeconds) },
+    });
   }
 
   const { month } = await params;
@@ -36,6 +65,20 @@ export async function GET(
   if (!parsed || monthNo < 1 || monthNo > 12 || year < 2018 || year > 2100) {
     return new Response("Expected a valid month in YYYY-MM form", { status: 400 });
   }
+
+  /**
+   * Business-unit scope.
+   *
+   * RLS guarantees tenant isolation but knows nothing about a membership's
+   * business-unit scope, and this query had no scope filter — so a scoped
+   * holder of `payroll:read` would have received every employee in the tenant.
+   * Today only tenant-scoped roles (owner, accountant, hr) hold that
+   * permission, so this was not yet reachable; it is applied anyway, because
+   * "no role currently has it" is a fact about the seed, not an invariant.
+   *
+   * `businessUnitIds === null` means tenant-wide.
+   */
+  const scope = session.principal.businessUnitIds;
 
   const rows = await withTenant(
     { tenantId: session.tenantId, userId: session.userId },
@@ -49,6 +92,7 @@ export async function GET(
                transport_allowance AS transport, other_allowance AS other
           FROM employees
          WHERE status IN ('active','probation')
+           ${scope ? sql`AND primary_business_unit_id = ANY(${scope}::uuid[])` : sql``}
          ORDER BY employee_code
       `),
   );
