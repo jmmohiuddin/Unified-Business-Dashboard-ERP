@@ -84,6 +84,11 @@ jobs:
 
       # RLS coverage is asserted by db:rls itself, which exits non-zero if any
       # tenant-scoped table lacks an enforced policy.
+      # Needs the seeded database, so it runs after db setup rather than beside
+      # the other static guards.
+      - name: Doc guard
+        run: npm run check:docs
+
       - name: Metric snapshots
         run: npm run test:metrics
 

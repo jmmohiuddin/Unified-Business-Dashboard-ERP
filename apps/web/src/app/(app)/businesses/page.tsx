@@ -107,7 +107,7 @@ export default async function BusinessesPage() {
 
                 {series.length > 1 && (
                   <div className="mt-3">
-                    <Sparkline points={series} height={32} stroke={color} />
+                    <Sparkline points={series} height={32} stroke={color} id={r.key} />
                   </div>
                 )}
 

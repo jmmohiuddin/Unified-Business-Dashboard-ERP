@@ -148,11 +148,21 @@ export function Sparkline({
   width = 260,
   height = 44,
   stroke = "var(--accent)",
+  id,
 }: {
   points: { x: string; y: number }[];
   width?: number;
   height?: number;
   stroke?: string;
+  /**
+   * Unique per rendered instance. The gradient id used to be derived from
+   * `points.length` and the rounded max, and /businesses renders one Sparkline
+   * PER BUSINESS UNIT in a loop — so any two units with the same series length
+   * and rounded max produced colliding SVG gradient ids, and the second
+   * silently won for both. `useId()` is unavailable in a server component, so
+   * the caller supplies the distinguishing value.
+   */
+  id?: string;
 }) {
   if (points.length < 2) return null;
   const ys = points.map((p) => p.y);
@@ -168,7 +178,7 @@ export function Sparkline({
   });
   const line = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const area = `${line} L${width},${height} L0,${height} Z`;
-  const gid = `sp-${points.length}-${Math.round(max)}`;
+  const gid = `sp-${id ?? `${points.length}-${Math.round(max)}-${Math.round(min)}`}`;
 
   return (
     <svg
@@ -209,15 +219,28 @@ export function BarRow({
   color?: string;
   href?: string;
 }) {
-  const pct = max > 0 ? Math.max(1.5, (Math.abs(value) / max) * 100) : 0;
+  // A negative value used to render as a positive-length bar via Math.abs(),
+  // indistinguishable from a positive one except by reading the label — so a
+  // loss-making business looked identical to a profitable one at a glance, on
+  // a screen whose entire job is comparison. Negatives now render on the
+  // opposite side of a baseline, in the negative colour.
+  const negative = value < 0;
+  const pct = max > 0 ? Math.min(100, Math.max(1.5, (Math.abs(value) / max) * 100)) : 0;
   const inner = (
     <>
       <div className="flex items-baseline justify-between gap-3 mb-1">
         <span className="text-xs font-medium truncate">{label}</span>
         <span className="text-xs font-semibold tnum shrink-0">{display}</span>
       </div>
-      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--surface-3)" }}>
-        <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
+      <div
+        className="h-1.5 rounded-full overflow-hidden flex"
+        style={{ background: "var(--surface-3)" }}
+      >
+        {negative && <div className="h-full" style={{ width: `${100 - pct}%` }} />}
+        <div
+          className="h-full rounded-full"
+          style={{ width: `${pct}%`, background: negative ? "var(--negative)" : color }}
+        />
       </div>
       {meta && <div className="text-2xs text-subtle mt-1">{meta}</div>}
     </>
