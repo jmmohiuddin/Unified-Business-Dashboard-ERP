@@ -429,3 +429,16 @@ export const notificationChannel = pgEnum("notification_channel", [
   "whatsapp",
   "push",
 ]);
+
+/**
+ * TypeScript views of the enums above.
+ *
+ * The seed already referenced `s.ModuleKey`, `s.JournalSource` and
+ * `s.PaymentMethod` as if they existed — they never did, and nothing caught it
+ * because packages/db was never type-checked (CI ran only `next build`).
+ * Derived from `enumValues` so the type cannot drift from the database domain:
+ * add a value to the pgEnum and the union widens automatically.
+ */
+export type ModuleKey = (typeof moduleKey.enumValues)[number];
+export type JournalSource = (typeof journalSource.enumValues)[number];
+export type PaymentMethod = (typeof paymentMethod.enumValues)[number];

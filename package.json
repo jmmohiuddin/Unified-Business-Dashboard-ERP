@@ -26,7 +26,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test:metrics": "npm run smoke -w @nexus/core",
     "test:e2e": "node scripts/e2e.mjs",
-    "test": "npm run test:metrics && npm run test:writes && npm run test:e2e && npm run test:security",
+    "test": "npm run test:unit && npm run test:metrics && npm run test:writes && npm run test:e2e && npm run test:security",
     "automations": "npm run automations -w @nexus/core --",
     "outbox": "npm run outbox -w @nexus/core --",
     "backup": "node scripts/backup.mjs",
@@ -36,7 +36,8 @@
     "audit": "npm audit --audit-level=high",
     "pii:rotate": "npm run pii:rotate -w @nexus/core --",
     "test:security": "node scripts/security-test.mjs",
-    "briefing": "npm run briefing -w @nexus/core --"
+    "briefing": "npm run briefing -w @nexus/core --",
+    "test:unit": "npm run test -w @nexus/core"
   },
   "devDependencies": {
     "dotenv": "^17.2.3",

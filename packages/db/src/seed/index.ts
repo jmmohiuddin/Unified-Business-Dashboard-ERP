@@ -407,7 +407,14 @@ async function main() {
   // ── Catalogue ─────────────────────────────────────────────────────────────
   console.log("· Catalogue and stock…");
   const items: any[] = [];
-  const addItem = (o: Partial<any>) => {
+  // Return type annotated explicitly. Spreading a `Partial<any>` into an object
+  // literal makes TypeScript infer the result from the *defaults only*, so every
+  // field the caller passes — name, durationMinutes, sku — vanished from the
+  // type and 15 downstream reads failed to compile. This file was never
+  // type-checked (CI only ran `next build`, which does not cover packages/db),
+  // so nobody found out. The collection is already `any[]`; this just makes the
+  // factory agree with it.
+  const addItem = (o: Partial<any>): any => {
     const it = { id: id(), tenantId, type: "product" as const, uom: "unit",
       trackingMode: "none" as const, isSellable: true, isPurchasable: true,
       salePrice: "0", costPrice: "0", ...o };

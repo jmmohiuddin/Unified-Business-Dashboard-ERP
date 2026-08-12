@@ -46,6 +46,17 @@ jobs:
 
       - run: npm ci --no-audit --no-fund
 
+      # Unit tests first: no database, no server, seconds to run. They cover the
+      # pure functions that produce legally consequential numbers — the class of
+      # bug the integration suites structurally cannot see.
+      - name: Unit tests
+        run: npm run test:unit
+
+      # packages/core and packages/db were previously only type-checked
+      # incidentally by `next build`.
+      - name: Type-check all workspaces
+        run: npm run typecheck
+
       # Vulnerable dependencies are a supply-chain problem, not a nice-to-have.
       # Fails the build on high or critical.
       - name: Dependency audit

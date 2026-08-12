@@ -1,3 +1,4 @@
+export * as Money from "./money/index.ts";
 export * from "./metrics/index.ts";
 export * from "./format.ts";
 export * from "./rbac.ts";

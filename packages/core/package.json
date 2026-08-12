@@ -20,16 +20,22 @@
     "test:writes": "tsx src/services/test.ts",
     "keygen": "tsx src/security/keygen.ts",
     "pii:rotate": "tsx src/security/rotate-cli.ts",
-    "briefing": "tsx src/briefing-cli.ts"
+    "briefing": "tsx src/briefing-cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@nexus/db": "*",
+    "decimal.js": "^10.6.0",
     "drizzle-orm": "^0.45.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "^4.1.10",
     "dotenv": "^17.2.3",
+    "fast-check": "^4.9.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
   }
 }
