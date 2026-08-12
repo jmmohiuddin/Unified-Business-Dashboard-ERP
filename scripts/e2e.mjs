@@ -149,9 +149,13 @@ async function main() {
     const r = await get(path, owner.token);
     check(`GET ${path}`, r.status === 200, `${r.html.length} bytes`);
   }
+  // This previously asserted status === 200, which did not merely fail to catch
+  // the dead-route problem — it REQUIRED it. With the catch-all answering every
+  // unmatched path with 200, fifteen dead dashboard drill-downs were invisible
+  // to the whole suite, and any status assertion was meaningless for coverage.
   check(
-    "an unknown route does not 500",
-    (await get("/nonsense-route", owner.token)).status === 200,
+    "an unknown route returns 404, not a 200 placeholder",
+    (await get("/nonsense-route", owner.token)).status === 404,
   );
 
   const dash = await get("/", owner.token);

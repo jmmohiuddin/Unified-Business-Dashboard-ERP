@@ -38,7 +38,8 @@
     "test:security": "node scripts/security-test.mjs",
     "briefing": "npm run briefing -w @nexus/core --",
     "test:unit": "npm run test -w @nexus/core",
-    "check:money": "node scripts/check-money.mjs"
+    "check:money": "node scripts/check-money.mjs",
+    "check:routes": "node scripts/check-routes.mjs"
   },
   "devDependencies": {
     "dotenv": "^17.2.3",

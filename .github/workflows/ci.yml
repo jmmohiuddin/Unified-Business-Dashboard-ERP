@@ -54,6 +54,12 @@ jobs:
       - name: Money guard
         run: npm run check:money
 
+      # Catches dead dashboard drill-downs, which the e2e suite structurally
+      # could not see: it never followed one, and the catch-all answered every
+      # unmatched path with HTTP 200.
+      - name: Route guard
+        run: npm run check:routes
+
       - name: Unit tests
         run: npm run test:unit
 

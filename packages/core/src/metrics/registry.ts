@@ -92,7 +92,7 @@ const revenueToday = defineMetric({
     const value = num(rows[0]?.today);
     const prior = num(rows[0]?.prior);
     return { value, unit: "currency" as const, priorValue: prior, changeRatio: changeRatio(value, prior),
-      drilldownHref: "/sales/invoices?range=today" };
+      drilldownHref: "/receivables?range=today" };
   },
 });
 
@@ -126,7 +126,7 @@ const revenueMtd = defineMetric({
     const value = num(rows[0]?.cur);
     const prior = num(rows[0]?.prior);
     return { value, unit: "currency" as const, priorValue: prior, changeRatio: changeRatio(value, prior),
-      drilldownHref: "/sales/invoices?range=mtd" };
+      drilldownHref: "/receivables?range=mtd" };
   },
 });
 
@@ -255,7 +255,7 @@ const cashBalance = defineMetric({
         label: { CASH: "Cash in hand", BANK: "Bank", WALLET: "Mobile wallet" }[r.system_key] ?? r.system_key,
         value: num(r.balance),
       })),
-      drilldownHref: "/accounting/cash",
+      drilldownHref: "/",
     };
   },
 });
@@ -299,7 +299,7 @@ const accountsReceivable = defineMetric({
         .filter(Boolean)
         .map((r) => ({ key: r!.bucket, label: labels[r!.bucket]!, value: num(r!.total),
           meta: { invoices: r!.cnt } })),
-      drilldownHref: "/sales/receivables",
+      drilldownHref: "/receivables",
     };
   },
 });
@@ -328,7 +328,7 @@ const overdueDebt = defineMetric({
         { key: "invoices", label: "Overdue invoices", value: num(rows[0]?.cnt) },
         { key: "worst", label: "Oldest (days)", value: num(rows[0]?.worst) },
       ],
-      drilldownHref: "/sales/receivables?filter=overdue",
+      drilldownHref: "/receivables?filter=overdue",
     };
   },
 });
@@ -347,7 +347,7 @@ const accountsPayable = defineMetric({
       WHERE direction = 'out' AND amount_due > 0
         AND status NOT IN ('cancelled','void','draft') AND ${buFilter(ctx, params)}
     `);
-    return { value: num(rows[0]?.total), unit: "currency" as const, drilldownHref: "/purchases/payables" };
+    return { value: num(rows[0]?.total), unit: "currency" as const, drilldownHref: "/purchases" };
   },
 });
 
@@ -378,7 +378,7 @@ const upcomingInstallments = defineMetric({
         key: r.state, label: r.state === "overdue" ? "Already overdue" : "Due within 30 days",
         value: num(r.total), meta: { count: r.cnt },
       })),
-      drilldownHref: "/sales/installments",
+      drilldownHref: "/receivables",
     };
   },
 });
@@ -447,7 +447,7 @@ const cashFlowForecast = defineMetric({
         { key: "outflow", label: "Supplier bills due", value: -outflow },
         { key: "opex", label: "Typical monthly running cost", value: -opex },
       ],
-      drilldownHref: "/accounting/cash-forecast",
+      drilldownHref: "/",
     };
   },
 });
@@ -477,7 +477,7 @@ const customersTotal = defineMetric({
         { key: "new", label: "New this month", value: num(r.new_mtd) },
         { key: "returning", label: "Returning", value: num(r.returning) },
       ],
-      drilldownHref: "/crm/customers",
+      drilldownHref: "/crm",
     };
   },
 });
@@ -510,7 +510,7 @@ const churnRisk = defineMetric({
       breakdown: rows.map((r) => ({
         key: r.id, label: r.display_name, value: num(r.ltv), meta: { daysSinceLastVisit: num(r.recency) },
       })),
-      drilldownHref: "/crm/customers?segment=at_risk",
+      drilldownHref: "/crm?segment=at_risk",
     };
   },
 });
@@ -551,7 +551,7 @@ const appointmentsToday = defineMetric({
         { key: "utilisation", label: "Chair utilisation %",
           value: capacity ? Math.round((bookedMinutes / capacity) * 100) : 0 },
       ],
-      drilldownHref: "/salon/appointments",
+      drilldownHref: "/salon",
     };
   },
 });
@@ -586,7 +586,7 @@ const openServiceRequests = defineMetric({
           value: num(r.n), meta: { breached: num(r.breached) } })),
         { key: "sla_breached", label: "SLA breached", value: breached },
       ],
-      drilldownHref: "/services/jobs?status=open",
+      drilldownHref: "/services?status=open",
     };
   },
 });
@@ -629,7 +629,7 @@ const occupancy = defineMetric({
         { key: "vacancy_cost", label: "Monthly rent lost to vacancy",
           value: rows.reduce((t, r) => t + num(r.vacant_rent), 0) },
       ],
-      drilldownHref: "/rentals/units",
+      drilldownHref: "/rentals",
     };
   },
 });
@@ -663,7 +663,7 @@ const inventoryValue = defineMetric({
         { key: "low", label: "Items at or below reorder point", value: num(rows[0]?.low) },
         { key: "out", label: "Out of stock", value: num(rows[0]?.out) },
       ],
-      drilldownHref: "/inventory/stock",
+      drilldownHref: "/inventory",
     };
   },
 });
@@ -723,7 +723,7 @@ const lowStockItems = defineMetric({
           },
         };
       }),
-      drilldownHref: "/inventory/reorder",
+      drilldownHref: "/inventory",
     };
   },
 });
@@ -933,7 +933,7 @@ const staffPerformance = defineMetric({
         key: r.id, label: r.full_name, value: num(r.revenue),
         meta: { role: r.designation, transactions: num(r.jobs), rating: r.rating ? num(r.rating) : null },
       })),
-      drilldownHref: "/hr/performance",
+      drilldownHref: "/hr/gratuity",
     };
   },
 });
@@ -963,7 +963,7 @@ const channelPerformance = defineMetric({
       value: rows.reduce((t, r) => t + num(r.revenue), 0), unit: "currency" as const,
       breakdown: rows.map((r) => ({ key: r.channel, label: r.channel, value: num(r.revenue),
         meta: { orders: num(r.orders) } })),
-      drilldownHref: "/ecommerce/orders",
+      drilldownHref: "/businesses",
     };
   },
 });

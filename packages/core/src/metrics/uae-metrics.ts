@@ -172,7 +172,7 @@ const corporateTaxEstimate = defineMetric({
           value: result.sbrApplied ? 1 : 0,
           meta: { notes: result.notes } },
       ],
-      drilldownHref: "/accounting/tax",
+      drilldownHref: "/compliance",
     };
   },
 });
