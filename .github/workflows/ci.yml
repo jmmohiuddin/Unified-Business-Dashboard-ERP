@@ -49,6 +49,11 @@ jobs:
       # Unit tests first: no database, no server, seconds to run. They cover the
       # pure functions that produce legally consequential numbers — the class of
       # bug the integration suites structurally cannot see.
+      # Keeps the decimal migration from eroding one Number(row.amount) at a
+      # time, which is exactly how the float handling accumulated originally.
+      - name: Money guard
+        run: npm run check:money
+
       - name: Unit tests
         run: npm run test:unit
 
