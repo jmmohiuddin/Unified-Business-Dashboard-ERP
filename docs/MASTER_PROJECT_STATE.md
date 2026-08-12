@@ -80,13 +80,13 @@ project with a statutory deadline.
 
 | Suite | Count | Runs against |
 |---|---|---|
-| **Unit (Vitest)** | **54** | nothing — no DB, no server |
+| **Unit (Vitest)** | **38** | nothing — no DB, no server |
 | Metric snapshots | 26 | seeded DB |
 | Write layer | 41 | seeded DB |
 | End-to-end | 98 | running server |
 | Security regression | 68 | running server |
 | Smoke | 10 | running server |
-| **Total** | **297** | |
+| **Total** | **281** | |
 
 Plus five static guards that need neither: money (float arithmetic on money
 paths), routes (every drill-down resolves), migrations (schema drift), docs
