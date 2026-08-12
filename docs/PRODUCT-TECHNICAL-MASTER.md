@@ -1,5 +1,30 @@
 # Nexus ERP — Product & Technical Master Document
 
+> ## ⚠️ SUPERSEDED — retained for history
+>
+> This document was reverse-engineered from the code on 2026-08-09. It has been
+> **superseded** by the v2.0 specifications: [PRD-02](PRD-02-product-requirements.md),
+> [TRD-03](TRD-03-technical-requirements.md), [PDD-04](PDD-04-product-design.md),
+> [WF-05](WF-05-wireframes.md), [OPS-07](OPS-07-golive-runbook.md). Start at
+> [MASTER_PROJECT_STATE](MASTER_PROJECT_STATE.md).
+>
+> **Four claims below are false.** They are corrected in
+> [MASTER_AUDIT](MASTER_AUDIT.md) and flagged inline:
+>
+> | § | Claim | Reality |
+> |---|---|---|
+> | §6.2 / README | "no dead ends" in drill-downs | 15 of 21 drilldown targets have no route (QA-001) |
+> | §18.1, §31 | security is "fail-closed" | the validator had **zero callers** until `d417c11` (ARCH-001) |
+> | §6.2, §9 | inter-company is "modelled" | **no runtime path exists** — seed only (PROD-001) |
+> | §16.4 | ledger balance is DB-enforced | true, but the application gate is a **float epsilon** (ARCH-002) |
+>
+> It also **missed the UAE e-invoicing mandate entirely** — the only requirement in the
+> project carrying a statutory deadline (ASP by 31 Mar 2027, live 1 Jul 2027).
+>
+> Its §7 PRD is replaced wholesale by PRD-02, which defines the MVP this document
+> correctly identified as missing.
+
+
 **Status:** Reverse-engineered audit · **Date:** 2026-08-09 · **Version:** 1.0
 **Audit basis:** 107 source files / ~25,600 lines, 95 database tables, 24 routes, 227 automated checks, one live deployment.
 
@@ -163,7 +188,7 @@ staff (barbers, technicians, receptionists, warehouse).
 | # | Problem | Evidence in the build | Severity |
 |---|---|---|---|
 | P1 | **No consolidated view.** Six businesses, six record-keeping systems, no group P&L. | Entire `business_units` + consolidated-metric design exists to solve this | Critical |
-| P2 | **Inter-company work is invisible.** When the owner's AC company services the owner's rental flat, nobody invoices anybody, so the property looks more profitable than it is and the AC company looks less busy. | Explicitly modelled: one balanced journal, revenue for one BU, cost for the other, nets to zero at group level | Critical |
+| P2 | **Inter-company work is invisible.** | ⚠️ **PROD-001 — "modelled" was wrong.** Two `documents` columns, one enum value and a seed generator. **No runtime code path creates one**; `completeJob` computes the flag and discards it. | Critical |
 | P3 | **UAE tax treatment differs per business line.** Residential rent is VAT-**exempt**; parking is standard-rated. Input VAT must be apportioned; getting it wrong produces confidently incorrect filings. | `vat_return_position` metric implements apportionment; `packages/core/src/uae/` isolates the rules | Critical |
 | P4 | **Cash is settled in post-dated cheques.** PDCs are neither cash nor receivables and need their own lifecycle. | `cheques` table + 113-cheque register + `cheque_pipeline` metric | High |
 | P5 | **Gratuity is an unfunded, invisible liability.** Accrues daily on *basic* salary only. | `gratuity_liability` metric = AED 160,353; pay stored as components | High |
@@ -1509,7 +1534,7 @@ is deliberately unsparing about what is not.
 | CSP | Per-request nonce, strict `script-src`, `frame-ancestors 'none'` |
 | Injection | Parameterised queries throughout |
 | Audit | Append-only log with actor, timestamp, before/after |
-| Config | Fail-closed validation; refuses to boot in production on defaults or when `APP_DATABASE_URL == DATABASE_URL` |
+| Config | ⚠️ **ARCH-001 — this was false when written.** `assertConfiguration` had zero callers; nothing refused to boot. Wired at boot in `d417c11`. The `APP_DATABASE_URL == DATABASE_URL` test is also a *string* comparison (SEC-007). |
 | Erasure | PDPL/GDPR-shaped pseudonymisation retaining tax invoices |
 | Backups | Encrypted + **verified decrypt-and-restore drill** |
 | Dependencies | `npm audit` gates CI |

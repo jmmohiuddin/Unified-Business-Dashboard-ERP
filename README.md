@@ -48,11 +48,13 @@ npm test           # 227 checks: metrics, writes, end-to-end, security
 | **Writes** | Payment & bill, invoice + POS, credit note & refund, supplier bill + stock receipt, stock count, book chair, raise/complete job, cheque lifecycle — transactional, idempotent, audited |
 | **Notifications** | In-app inbox with unread bell — the read side of the automation loop |
 | **API** | Token-authenticated `/api/v1` over the same metric layer, permission-bound per token — mobile-ready |
-| **Security** | argon2id, TOTP MFA, rate limits + silent lockout, CSP/HSTS, audit log, **PII encrypted at rest** with rotatable keys, encrypted backups, right-to-erasure |
+| **Security** | argon2id, TOTP MFA, rate limits on auth, writes and API, CSP/HSTS, audit log, **PII encrypted at rest** with rotatable keys, fail-closed boot check, encrypted backups (fail-closed), right-to-erasure |
 | **Tests** | 26 metric · 35 write-layer · 98 end-to-end · 68 security = **227 checks**, all passing |
 
-Every navigation entry and every dashboard drill-down leads to a real screen —
-there are no dead ends. What is *not* built is listed under
+Every navigation entry leads to a real screen. **Dashboard drill-downs do not yet:**
+15 of 21 metric drill-down targets have no route, four of them on the main dashboard —
+a defect the test suite could not see, because it never followed one. Tracked as QA-001
+in [the audit](docs/MASTER_AUDIT.md). What is *not* built is listed under
 [Known gaps](#known-gaps) rather than hidden behind a plausible-looking mock.
 
 ---
@@ -125,7 +127,10 @@ rounding rules, one permission check and one audit path.
 
 | | |
 |---|---|
-| **[★ Product & Technical Master Document](docs/PRODUCT-TECHNICAL-MASTER.md)** | **Single source of truth** — PRD, personas, design spec, architecture, audit, debt registers, roadmap |
+| **[★ MASTER_PROJECT_STATE](docs/MASTER_PROJECT_STATE.md)** | **Start here** — what governs, where the build is, what is open |
+| [MASTER_AUDIT](docs/MASTER_AUDIT.md) | Findings register with evidence, including four corrections to previously published claims |
+| [PRD-02](docs/PRD-02-product-requirements.md) · [TRD-03](docs/TRD-03-technical-requirements.md) · [PDD-04](docs/PDD-04-product-design.md) · [WF-05](docs/WF-05-wireframes.md) · [OPS-07](docs/OPS-07-golive-runbook.md) | The governing v2.0 specifications |
+| [Product & Technical Master](docs/PRODUCT-TECHNICAL-MASTER.md) | **Superseded** by PRD-02/TRD-03; retained for history |
 | [00 — Strategy](docs/00-strategy.md) | Where the brief is wrong, what is missing, what to drop |
 | [01 — Architecture](docs/01-architecture.md) | Stack choices with the alternatives they beat |
 | [02 — Data model](docs/02-data-model.md) | ER diagrams, unification decisions, DB-enforced invariants |
