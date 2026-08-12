@@ -115,6 +115,24 @@ export function checkConfiguration(env: NodeJS.ProcessEnv = process.env): Config
       "Enabled outside production. X-Forwarded-For can be spoofed to bypass rate limits.");
   }
 
+  // ── Backups ───────────────────────────────────────────────────────────────
+  // Deliberately a warning, not a fatal. The web app does not take backups, so
+  // refusing to serve requests because a backup key is absent would couple two
+  // unrelated concerns. Enforcement lives at the point of use: scripts/backup.mjs
+  // exits non-zero rather than writing a plaintext dump. This check exists so the
+  // gap is visible before someone discovers it during an incident.
+  if (isProduction) {
+    if (!env.BACKUP_ENCRYPTION_KEY) {
+      warn("BACKUP_ENCRYPTION_KEY",
+        "Not set. Backups will refuse to run, so there is no recovery path.",
+        "npm run keygen");
+    } else if (looksWeak(env.BACKUP_ENCRYPTION_KEY)) {
+      warn("BACKUP_ENCRYPTION_KEY",
+        "Is weak. It is the only thing standing between a stolen dump and every record.",
+        "npm run keygen");
+    }
+  }
+
   // ── AI ────────────────────────────────────────────────────────────────────
   if (env.ANTHROPIC_API_KEY && !env.ANTHROPIC_API_KEY.startsWith("sk-ant-")) {
     warn("ANTHROPIC_API_KEY", "Does not look like an Anthropic key.");

@@ -28,7 +28,10 @@ jobs:
       DATABASE_URL: postgresql://nexus:nexus@127.0.0.1:5432/nexus
       APP_DATABASE_URL: postgresql://nexus_app:nexus_app@127.0.0.1:5432/nexus
       # CI-only values. Real deployments read these from a secret manager.
-      AUTH_SECRET: ci-only-secret-that-is-long-enough-to-pass-validation-0123456789
+      # Must not contain a known dev-placeholder token ("secret", "changeme",
+      # "password", "development") — the boot gate in apps/web/src/instrumentation.ts
+      # treats those as fatal in production, and `next start` runs in production mode.
+      AUTH_SECRET: ci-only-signing-value-long-enough-for-validation-0123456789abcdef
       PII_ENCRYPTION_KEYS: '{"1":"Y2ktb25seS10ZXN0LWtleS0zMi1ieXRlcy1sb25nISE="}'
       PII_ACTIVE_KEY_ID: "1"
       BACKUP_ENCRYPTION_KEY: ci-only-backup-key
