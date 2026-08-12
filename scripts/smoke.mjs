@@ -57,10 +57,29 @@ await check("sign-in page renders", async () => {
   return `${(html.length / 1024).toFixed(0)} KB`;
 });
 
-await check("the sign-in page publishes no credentials", async () => {
-  const html = await (await get("/login")).text();
-  if (/demo1234|owner@sumon\.test/.test(html)) throw new Error("demo credentials are visible");
-});
+/**
+ * Strict by default, and it has to be.
+ *
+ * This can run against a remote deployment whose environment it cannot read, so
+ * it must not infer "demo mode is fine here" from its own env — that would let
+ * a production target pass because the laptop running the check happens to have
+ * the flag set. The relaxation is an explicit operator statement about the
+ * TARGET, not a fact discovered about the runner.
+ */
+const allowDemo = process.env.SMOKE_ALLOW_DEMO === "true";
+await check(
+  allowDemo
+    ? "demo target still offers the role picker"
+    : "the sign-in page publishes no credentials",
+  async () => {
+    const html = await (await get("/login")).text();
+    const visible = /demo1234|owner@sumon\.test/.test(html);
+    if (allowDemo && !visible) throw new Error("demo target but no credentials shown");
+    if (!allowDemo && visible) {
+      throw new Error("demo credentials are visible — set SMOKE_ALLOW_DEMO=true only if this target is a demo");
+    }
+  },
+);
 
 await check("an unauthenticated page redirects to login", async () => {
   const res = await get("/");
