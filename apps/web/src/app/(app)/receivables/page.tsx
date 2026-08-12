@@ -218,6 +218,7 @@ export default async function ReceivablesPage({
             submitLabel="Raise credit note"
             pendingLabel="Raising…"
             className="space-y-3"
+            confirm="Reverses the revenue, the VAT and the cost of sale, restocks any returned goods, and — if the invoice was already paid — issues a refund. Credit notes are not deleted afterwards; correcting one means raising another."
             hidden={{ full: "true" }}
           >
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

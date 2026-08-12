@@ -197,6 +197,7 @@ export default async function PurchasesPage({
                     submitLabel="Pay"
                     pendingLabel="…"
                     variant="ghost"
+                    confirm={`Pays ${b.doc_number} in full. Money leaves the account and the entry cannot be undone from this screen.`}
                     hidden={{
                       businessUnitId: b.business_unit_id,
                       supplierId: b.party_id ?? undefined,

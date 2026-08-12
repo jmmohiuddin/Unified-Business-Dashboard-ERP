@@ -60,6 +60,7 @@ export function ActionForm({
   className = "",
   hidden,
   onDone,
+  confirm,
 }: {
   action: (formData: FormData) => Promise<ActionResult>;
   children?: ReactNode;
@@ -70,8 +71,24 @@ export function ActionForm({
   /** Static values that never change between renders. */
   hidden?: Record<string, string | undefined>;
   onDone?: () => void;
+  /**
+   * Plain-language description of the irreversible effect, shown before the
+   * write happens.
+   *
+   * Eight paths posted a journal on a single click with no interstitial —
+   * including cheque *Bounce* as a bare button in a table row and a credit
+   * note that can issue a cash refund. The idempotency key stops an accidental
+   * double-post of the same intent; it does nothing about a wrong first one,
+   * and there is no void UI for most of these.
+   *
+   * Deliberately states the EFFECT, not "are you sure?". A confirmation the
+   * user cannot read is a click-through, which is worse than none because it
+   * looks like a control.
+   */
+  confirm?: string;
 }) {
   const formRef = useRef<HTMLFormElement>(null);
+  const [pendingConfirm, setPendingConfirm] = useState(false);
   // Generated once on mount and reused for every submit of THIS form instance,
   // which is exactly the semantics an idempotency key needs.
   const [idempotencyKey] = useState(() =>
@@ -93,14 +110,48 @@ export function ActionForm({
   );
 
   return (
-    <form ref={formRef} action={formAction} className={className}>
+    <form
+      ref={formRef}
+      action={formAction}
+      className={className}
+      onSubmit={(e) => {
+        // Two-step rather than window.confirm: a native dialog cannot be styled,
+        // is suppressible by the browser, and reads as a bug on mobile.
+        if (confirm && !pendingConfirm) {
+          e.preventDefault();
+          setPendingConfirm(true);
+        }
+      }}
+    >
       <input type="hidden" name="idempotencyKey" value={idempotencyKey} />
       {Object.entries(hidden ?? {}).map(([k, v]) =>
         v === undefined ? null : <input key={k} type="hidden" name={k} value={v} />,
       )}
       {children}
+
+      {confirm && pendingConfirm && (
+        <div
+          className="text-2xs leading-relaxed px-3 py-2 mb-2 rounded-[var(--radius-md)]"
+          style={{ background: "var(--caution-soft)", color: "var(--caution)" }}
+          role="alert"
+        >
+          {confirm}
+          <button
+            type="button"
+            onClick={() => setPendingConfirm(false)}
+            className="underline ml-1.5"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
       <div className="flex items-center gap-2 flex-wrap">
-        <SubmitButton label={submitLabel} pendingLabel={pendingLabel} variant={variant} />
+        <SubmitButton
+          label={confirm && pendingConfirm ? `Yes — ${submitLabel.toLowerCase()}` : submitLabel}
+          pendingLabel={pendingLabel}
+          variant={confirm && pendingConfirm ? "danger" : variant}
+        />
         {state && (
           <span
             className="text-2xs"

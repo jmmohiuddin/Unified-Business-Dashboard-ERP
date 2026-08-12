@@ -204,15 +204,18 @@ export default async function ChequesPage({
                         variant="ghost"
                         hidden={{ chequeId: c.id, action: "deposit", onDate: today }} />
                       <ActionForm action={chequeAction} submitLabel="Cleared" pendingLabel="…"
+                        confirm={`Records ${formatMoney(Number(c.amount), ccy, 0)} as received and settles the invoices this cheque covers. There is no undo on this screen.`}
                         hidden={{ chequeId: c.id, action: "clear", onDate: today }} />
                     </>
                   )}
                   {c.status === "deposited" && (
                     <>
                       <ActionForm action={chequeAction} submitLabel="Cleared" pendingLabel="…"
+                        confirm={`Records ${formatMoney(Number(c.amount), ccy, 0)} as received and settles the invoices this cheque covers. There is no undo on this screen.`}
                         hidden={{ chequeId: c.id, action: "clear", onDate: today }} />
                       <ActionForm action={chequeAction} submitLabel="Bounced" pendingLabel="…"
                         variant="danger"
+                        confirm={`Marks ${formatMoney(Number(c.amount), ccy, 0)} as returned unpaid, posts a AED 100 bank charge, and leaves the debt outstanding.`}
                         hidden={{ chequeId: c.id, action: "bounce", onDate: today,
                           bounceReason: "Insufficient funds", bankCharge: "100" }} />
                     </>
