@@ -21,6 +21,20 @@ import {
 
 export const dynamic = "force-dynamic";
 
+/**
+ * DEMO MODE — off unless explicitly switched on.
+ *
+ * This screen used to prefill `owner@sumon.test` / `demo1234` and render a
+ * one-click list of every seeded account. That is a good demo and an
+ * indefensible sign-in page: the deployed site published working credentials
+ * for the whole tenant to anyone who loaded it.
+ *
+ * The fix is a flag that defaults to OFF, not a deletion — the role picker is
+ * genuinely the clearest way to show that permissions are enforced per role.
+ * A real deployment simply never sets it, so it cannot leak by omission.
+ */
+const DEMO_MODE = process.env.NEXUS_DEMO_MODE === "true";
+
 /** Generic failure. Never distinguishes wrong password from unknown account
  *  from locked account — each distinction is a user-enumeration oracle. */
 const FAIL = "/login?error=1";
@@ -83,7 +97,9 @@ export default async function LoginPage({
 }) {
   if (await getSession()) redirect("/");
   const { error } = await searchParams;
-  const demoUsers = await listDemoUsers();
+  // Not merely hidden — outside demo mode the account list is never queried,
+  // so it cannot reach the client in any form.
+  const demoUsers = DEMO_MODE ? await listDemoUsers() : [];
 
   return (
     <main className="min-h-dvh grid lg:grid-cols-[1.1fr_1fr]">
@@ -144,7 +160,7 @@ export default async function LoginPage({
                 type="email"
                 required
                 autoComplete="username"
-                defaultValue="owner@sumon.test"
+                defaultValue={DEMO_MODE ? "owner@sumon.test" : undefined}
                 className="w-full px-3 py-2 rounded-[var(--radius-md)] text-sm"
                 style={{ background: "var(--surface)", border: "1px solid var(--border-strong)" }}
               />
@@ -159,7 +175,7 @@ export default async function LoginPage({
                 type="password"
                 required
                 autoComplete="current-password"
-                defaultValue="demo1234"
+                defaultValue={DEMO_MODE ? "demo1234" : undefined}
                 className="w-full px-3 py-2 rounded-[var(--radius-md)] text-sm"
                 style={{ background: "var(--surface)", border: "1px solid var(--border-strong)" }}
               />
@@ -182,6 +198,7 @@ export default async function LoginPage({
             </button>
           </form>
 
+          {DEMO_MODE && (
           <div className="mt-8">
             <p className="label mb-2">Or explore a role</p>
             <div className="grid gap-1 max-h-56 overflow-y-auto scrollbar-none">
@@ -205,6 +222,7 @@ export default async function LoginPage({
               hidden in the UI.
             </p>
           </div>
+          )}
         </div>
       </section>
     </main>

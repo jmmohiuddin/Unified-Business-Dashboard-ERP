@@ -115,6 +115,17 @@ export function checkConfiguration(env: NodeJS.ProcessEnv = process.env): Config
       "Enabled outside production. X-Forwarded-For can be spoofed to bypass rate limits.");
   }
 
+  // ── Demo mode ─────────────────────────────────────────────────────────────
+  // Demo mode prefills working credentials on the sign-in page and lists every
+  // seeded account. Harmless on a laptop, a published credential leak anywhere
+  // reachable.
+  if (isProduction && env.NEXUS_DEMO_MODE === "true") {
+    fatal("NEXUS_DEMO_MODE",
+      "Enabled in production. The sign-in page will publish working credentials " +
+        "for every seeded account to anyone who loads it.",
+      "Unset NEXUS_DEMO_MODE.");
+  }
+
   // ── Backups ───────────────────────────────────────────────────────────────
   // Deliberately a warning, not a fatal. The web app does not take backups, so
   // refusing to serve requests because a backup key is absent would couple two
