@@ -568,3 +568,40 @@ export const automationsRelations = relations(automations, ({ many }) => ({
 export const aiConversationsRelations = relations(aiConversations, ({ many }) => ({
   messages: many(aiMessages),
 }));
+
+/**
+ * SCHEDULER RUN LOG.
+ *
+ * The automation runner, the notification outbox, the daily briefing and the
+ * KPI snapshot job were all built and all inert — each required a human to run
+ * a CLI command. An automation platform that only runs when someone remembers
+ * to run it does not automate anything.
+ *
+ * Deliberately NOT tenant-scoped: a scheduled job sweeps every tenant, and a
+ * run that failed before it resolved a tenant still has to be recorded. It
+ * carries no tenant data — job name, timing, outcome, counts.
+ *
+ * The row is also the lock. Claiming a run is an INSERT guarded by a partial
+ * unique index on (job) WHERE finished_at IS NULL, so two overlapping cron
+ * invocations cannot both run the same job: the second insert simply fails.
+ * That is a distributed lock without adding Redis to the deployment.
+ */
+export const jobRuns = pgTable(
+  "job_runs",
+  {
+    id: pk(),
+    job: varchar("job", { length: 40 }).notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull().defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    ok: boolean("ok"),
+    /** Tenants swept, records touched — whatever the job counts. */
+    counts: jsonb("counts").notNull().default(sql`'{}'::jsonb`),
+    error: text("error"),
+    ...timestamps,
+  },
+  (t) => [
+    index("job_runs_job_idx").on(t.job, t.startedAt),
+    // One in-flight run per job, enforced by the database rather than by hope.
+    uniqueIndex("job_runs_inflight_uq").on(t.job).where(sql`finished_at IS NULL`),
+  ],
+);

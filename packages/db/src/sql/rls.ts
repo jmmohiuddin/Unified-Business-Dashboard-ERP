@@ -108,6 +108,27 @@ export function buildRlsStatements(
   `);
   stmts.push(`ALTER ROLE ${appRole} NOBYPASSRLS;`);
 
+  /**
+   * Read access to the migration bookkeeping.
+   *
+   * /health reports the applied schema version so a container running against an
+   * un-migrated database is visible rather than silently broken. That endpoint is
+   * unauthenticated, so it must not use the owner connection — the app role is
+   * granted SELECT on the migration table instead. It is a hash and a timestamp,
+   * no tenant data.
+   *
+   * Guarded: the schema only exists once migrations have run at least once.
+   */
+  stmts.push(`
+    DO $$
+    BEGIN
+      IF EXISTS (SELECT 1 FROM information_schema.schemata WHERE schema_name = 'drizzle') THEN
+        EXECUTE 'GRANT USAGE ON SCHEMA drizzle TO ${appRole}';
+        EXECUTE 'GRANT SELECT ON ALL TABLES IN SCHEMA drizzle TO ${appRole}';
+      END IF;
+    END $$;
+  `);
+
   for (const table of TENANT_SCOPED_TABLES) {
     const policy = `${table}_tenant_isolation`;
     const allowsGlobalRows = GLOBAL_ROW_TABLES.includes(table);
