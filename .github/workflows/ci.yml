@@ -111,6 +111,11 @@ jobs:
       - name: Security regression suite
         run: npm run test:security
 
+      # What a post-deploy check would assert, run here against the CI instance
+      # so the assertions themselves stay honest.
+      - name: Smoke test
+        run: npm run smoke
+
       - name: Daily briefing composes
         run: npm run briefing
 

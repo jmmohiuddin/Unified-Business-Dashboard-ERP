@@ -4,7 +4,7 @@
 true, what is open. Updated as work lands; every other document is either a specification
 (what should be) or an audit (what was found). This one answers *"where are we right now?"*
 
-**Last updated:** 2026-08-13 · **Baseline commit:** `02d0cdf`
+**Last updated:** 2026-08-13 · **Baseline commit:** `eb3d0e2`
 
 ---
 
@@ -60,26 +60,39 @@ project with a statutory deadline.
 | WPS export: rate limit, BU scope, error boundary | ✅ `1c50e83` |
 | Every mutating action rate-limited | ✅ `02d0cdf` |
 | Specifications landed | ✅ `b6ba9f9` |
-| Decimal money arithmetic | ⬜ Epic B |
-| Unit tests on `uae/`, `money/`, `rbac` | ⬜ Epic C |
-| Error + loading states on every route | ⬜ Epic D |
-| Observability, `/health`, post-deploy smoke | ⬜ Epic D |
-| Versioned migrations, staging | ⬜ Epic D |
-| Scheduler with run log | ⬜ Epic D |
-| User management + session revocation | ⬜ Epic D |
+| Decimal money arithmetic, 12 epsilons removed | ✅ `f316425`…`5b0470e` |
+| Money guard in CI | ✅ `91698bb` |
+| Vitest + hand-calculated `uae/` fixtures | ✅ `3d11c52`, `bdbef24` |
+| Root `typecheck` in CI (found 18 latent errors) | ✅ `3d11c52` |
+| Dead drill-downs fixed; missing routes 404 | ✅ `832209e` |
+| Error + loading states | ✅ `d74ecd9` |
+| Versioned migrations + drift guard | ✅ `cf62574` |
+| User management + session revocation | ✅ `8284635` |
+| Scheduler with run log and job lock | ✅ `995ac82` |
+| `/health` + post-deploy smoke | ✅ `995ac82`, smoke wired to CI |
+| Confirmation on irreversible writes | ✅ `eb3d0e2` |
+| **Sentry / error tracking** | ⬜ **not done** — `/health` and the smoke test cover liveness; there is still no exception aggregation, so a handled-but-wrong 500 in production is invisible |
+| **Staging environment** | ⬜ **not done** — migrations are reviewable and drift-gated, but nothing proves them on a copy before production |
+| **RLS generated INTO migrations** | ⬜ **not done** — `db:rls` still runs as a separate idempotent step after migrate. The build gate still fails if any tenant table lacks a policy, so isolation is not weakened |
 | Offsite backup replication | ⬜ blocked on Q-8 |
 
 ### Verification surface
 
 | Suite | Count | Runs against |
 |---|---|---|
+| **Unit (Vitest)** | **54** | nothing — no DB, no server |
 | Metric snapshots | 26 | seeded DB |
-| Write layer | 35 | seeded DB |
+| Write layer | 41 | seeded DB |
 | End-to-end | 98 | running server |
 | Security regression | 68 | running server |
-| **Unit** | **0** | — none exists yet (Epic C) |
+| Smoke | 10 | running server |
+| **Total** | **297** | |
 
-**All 227 currently require Postgres; 166 also require a live HTTP server.**
+Plus five static guards that need neither: money (float arithmetic on money
+paths), routes (every drill-down resolves), migrations (schema drift), docs
+(README table count), and the root type-check across all workspaces.
+
+Five unit tests are `it.todo`, blocked on Q-1 and Q-2 rather than guessed.
 
 ---
 
@@ -121,7 +134,7 @@ Ownership matters more than the question. An unowned question is not open, it is
 | D4 | Arabic deferred to Phase 4, treated as market credibility | PRD-02 §16 |
 | D5 | The accountant's signed reconciliation is a go-live gate | PRD-02 FR-D01 |
 | D6 | Construction module dropped (NG11); e-commerce schema retained, no surface | PRD-02 §5.3 |
-| **D-2e** | **Scheduler runtime: pending.** TRD-03 ADR-003 specifies a process host + Redis; the recommendation on the table is ADR-003's own documented fallback (job table + Vercel Cron) for a 9-user, one-tenant, daily-granularity workload. | Awaiting owner sign-off |
+| **D-2e** | **Scheduler runtime: job table + Vercel Cron**, not ADR-003's process host + Redis. For nine users, one tenant and four daily jobs, a worker buys a second deploy target, a second secret set and a second thing that can be down. The lock is a partial unique index on `job_runs`, verified with two concurrent invocations (200 / 409). **Graduation trigger:** sub-minute scheduling, or outbox volume beyond a few hundred a day. | Implemented `995ac82` — reversible |
 
 ---
 
@@ -131,6 +144,7 @@ Ownership matters more than the question. An unowned question is not open, it is
 |---|---|
 | Production | Vercel + Neon `ap-southeast-1`; database `neondb` |
 | Production data | **Seeded demo data only.** No real records exist yet. |
-| Demo credentials | No longer rendered on the sign-in page (`1f61a97`). `demo1234` still authenticates and is published in git history — rotate before real data. |
+| Demo credentials | No longer rendered on the sign-in page (`1f61a97`), and the smoke test asserts they are absent. `demo1234` still authenticates and is published in git history — rotate before real data. |
+| Scheduled jobs | Four crons declared in `vercel.json`. **`CRON_SECRET` must be set in Vercel** or the endpoints stay disabled (fail-closed) and nothing runs. |
 | DB roles | `neondb_owner` has `BYPASSRLS` (migrations only); `nexus_app` is `NOBYPASSRLS` (the app) |
 | Repo | Public |

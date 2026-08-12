@@ -26,7 +26,7 @@ Sign in as `owner@sumon.test` / `demo1234`, or pick any role from the list on th
 sign-in screen — each one sees a genuinely different dashboard.
 
 ```bash
-npm test           # 227 checks: metrics, writes, end-to-end, security
+npm test           # 297 checks: unit, metrics, writes, end-to-end, security
 ```
 
 ---
@@ -49,7 +49,7 @@ npm test           # 227 checks: metrics, writes, end-to-end, security
 | **Notifications** | In-app inbox with unread bell — the read side of the automation loop |
 | **API** | Token-authenticated `/api/v1` over the same metric layer, permission-bound per token — mobile-ready |
 | **Security** | argon2id, TOTP MFA, rate limits on auth, writes and API, CSP/HSTS, audit log, **PII encrypted at rest** with rotatable keys, fail-closed boot check, encrypted backups (fail-closed), right-to-erasure |
-| **Tests** | 26 metric · 35 write-layer · 98 end-to-end · 68 security = **227 checks**, all passing |
+| **Tests** | 54 unit · 26 metric · 41 write-layer · 98 end-to-end · 68 security · 10 smoke = **297 checks**, plus five static guards (money, routes, migrations, docs, types) |
 
 Every navigation entry leads to a real screen. **Dashboard drill-downs do not yet:**
 15 of 21 metric drill-down targets have no route, four of them on the main dashboard —
@@ -147,11 +147,16 @@ npm run dev            # dev server on :3100
 npm run build          # production build (type-checked)
 npm run db:reset       # drop, recreate, push, secure, seed
 npm run db:rls         # regenerate RLS policies — fails if any table is unprotected
-npm run test           # 227 checks across four suites
+npm run test           # 297 checks across five suites
 npm run test:security  # 68 security-regression probes against the running app
 npm run automations    # dry-run every automation rule
 npm run outbox         # dry-run outbound delivery, showing consent suppressions
 npm run backup:verify  # encrypt, decrypt, restore, prove the numbers reconcile
+npm run smoke          # post-deploy: is the thing that just shipped serving?
+npm run check:money    # no float arithmetic on money paths
+npm run check:routes   # every dashboard drill-down resolves
+npm run check:migrations # schema matches its committed SQL
+npm run db:migrate     # apply versioned migrations
 npm run briefing       # compose the daily executive briefing (--commit to save)
 npm run keygen         # generate production key material
 npm run pii:rotate     # re-encrypt identity documents under a new key
