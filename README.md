@@ -35,7 +35,7 @@ npm test           # 297 checks: unit, metrics, writes, end-to-end, security
 
 | | |
 |---|---|
-| **95 tables** | 89 tenant-isolated + 6 global, across 10 bounded contexts |
+| **96 tables** | 90 tenant-isolated + 6 global, across 10 bounded contexts |
 | **Tenant isolation** | PostgreSQL RLS, `FORCE`d, generated from the schema — cross-tenant read *and* write proven blocked |
 | **Double-entry ledger** | 28,077 journal lines, balance enforced by a database trigger |
 | **26 metrics** | Typed, permission-checked semantic layer — full dashboard sweep in **~150 ms** |
