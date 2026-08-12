@@ -60,6 +60,11 @@ jobs:
       - name: Route guard
         run: npm run check:routes
 
+      # Schema changes must arrive as reviewable SQL, not as an ORM diff applied
+      # straight to a live database.
+      - name: Migration drift guard
+        run: npm run check:migrations
+
       - name: Unit tests
         run: npm run test:unit
 
@@ -78,7 +83,7 @@ jobs:
 
       - name: Prepare database
         run: |
-          npm run db:push
+          npm run db:migrate
           npm run db:rls
           npm run db:seed
 

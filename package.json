@@ -11,7 +11,7 @@
     "node": "22.x"
   },
   "scripts": {
-    "setup": "npm install && npm run db:create && npm run db:push && npm run db:rls && npm run db:seed",
+    "setup": "npm install && npm run db:create && npm run db:migrate && npm run db:rls && npm run db:seed",
     "db:create": "node scripts/create-db.mjs",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
@@ -19,7 +19,7 @@
     "db:rls": "npm run rls -w @nexus/db",
     "db:seed": "npm run seed -w @nexus/db",
     "db:studio": "npm run studio -w @nexus/db",
-    "db:reset": "node scripts/create-db.mjs --drop && npm run db:push && npm run db:rls && npm run db:seed",
+    "db:reset": "node scripts/create-db.mjs --drop && npm run db:migrate && npm run db:rls && npm run db:seed",
     "dev": "npm run dev -w @nexus/web",
     "build": "npm run build -w @nexus/web",
     "start": "npm run start -w @nexus/web",
@@ -40,7 +40,10 @@
     "test:unit": "npm run test -w @nexus/core",
     "check:money": "node scripts/check-money.mjs",
     "check:routes": "node scripts/check-routes.mjs",
-    "check:docs": "node scripts/check-docs.mjs"
+    "check:docs": "node scripts/check-docs.mjs",
+    "db:migrate": "npm run migrate -w @nexus/db",
+    "db:generate": "npm run generate -w @nexus/db",
+    "check:migrations": "node scripts/check-migrations.mjs"
   },
   "devDependencies": {
     "dotenv": "^17.2.3",
