@@ -61,8 +61,22 @@ export interface WpsFile {
   warnings: string[];
 }
 
+import * as M from "../money/index.ts";
+
 const pad = (n: number, len: number) => String(n).padStart(len, "0");
-const money = (n: number) => n.toFixed(2);
+
+/**
+ * Amounts written into the SIF.
+ *
+ * This file goes to a MOHRE-approved agent and moves real salaries. It was
+ * `n.toFixed(2)` over a float sum of four allowance columns — each of which had
+ * already been through Number() on the way out of numeric(18,4). A rounding
+ * error here is a payroll discrepancy submitted to a bank.
+ *
+ * Exact decimal, rounded half-up at the currency unit, which is what a payslip
+ * shows.
+ */
+const money = (n: number | string | M.Money) => M.toDisplay(M.money(n));
 
 function stamp(d: Date) {
   const yy = pad(d.getUTCFullYear() % 100, 2);
@@ -116,12 +130,14 @@ export function generateSif(input: WpsFileInput): WpsFile {
   const salaryYm = `${year}${month}`;
 
   const lines: string[] = [];
-  let total = 0;
+  let total = M.ZERO;
 
   // EDR — Employee Detail Records.
   for (const e of input.employees) {
-    const amount = e.fixedIncome + e.variableIncome;
-    total += amount;
+    // The SCR control total must equal the sum of the EDR amounts exactly, or
+    // the agent rejects the file.
+    const amount = M.add(M.money(e.fixedIncome), M.money(e.variableIncome));
+    total = M.add(total, amount);
     lines.push(
       [
         "EDR",
@@ -159,7 +175,7 @@ export function generateSif(input: WpsFileInput): WpsFile {
     fileName: `${input.employerId}${ts.full}.SIF`,
     content: `${lines.join("\r\n")}\r\n`, // MOHRE expects CRLF
     recordCount: input.employees.length,
-    totalSalaries: total,
+    totalSalaries: M.toNumber(total),
     warnings,
   };
 }

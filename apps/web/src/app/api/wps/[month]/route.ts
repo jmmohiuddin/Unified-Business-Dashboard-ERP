@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
-import { can, generateSif, tryDecryptPii, type WpsEmployee } from "@nexus/core";
+import { Money, can, generateSif, tryDecryptPii, type WpsEmployee } from "@nexus/core";
 import { getSession } from "@/lib/session";
 import { rateLimit } from "@/lib/rate-limit";
 
@@ -109,8 +109,13 @@ async function handle(params: Promise<{ month: string }>) {
     daysInPeriod,
     // Fixed income is the contractual package; variable is overtime and
     // commission, which would come from the payroll run in production.
-    fixedIncome:
-      Number(e.basic) + Number(e.housing) + Number(e.transport) + Number(e.other),
+    //
+    // Summed in decimal: this figure is written into a file submitted to a
+    // MOHRE agent and paid out by a bank, so four numeric(18,4) columns added
+    // as floats is not an acceptable way to arrive at it.
+    fixedIncome: Money.toNumber(
+      Money.sum([e.basic, e.housing, e.transport, e.other].map(Money.fromDb)),
+    ),
     variableIncome: 0,
     daysOnLeave: 0,
     employeeName: e.full_name,

@@ -29,6 +29,8 @@
  * gross-misconduct forfeiture under Article 44.
  */
 
+import * as M from "../money/index.ts";
+
 export interface GratuityInput {
   /** Monthly BASIC wage, excluding all allowances. */
   basicSalary: number;
@@ -101,7 +103,13 @@ export function calculateGratuity(input: GratuityInput): GratuityResult {
 
   // Daily wage is the monthly basic annualised over a 365-day year — the
   // convention MOHRE and the courts use, not monthly ÷ 30.
-  const dailyBasicWage = (basicSalary * 12) / DAYS_PER_YEAR;
+  //
+  // Computed in exact decimal. (basic × 12) ÷ 365 does not terminate for most
+  // salaries, and the result is then multiplied by up to ~700 days, so float
+  // error is amplified rather than absorbed. This figure is what an employee is
+  // actually paid on termination and what the accrued liability is measured
+  // against, so it is not a place for "close enough".
+  const dailyBasicWage = M.div(M.mul(M.money(basicSalary), 12), DAYS_PER_YEAR);
 
   const yearsInFirstBand = Math.min(serviceYears, 5);
   const yearsBeyondFive = Math.max(0, serviceYears - 5);
@@ -110,32 +118,32 @@ export function calculateGratuity(input: GratuityInput): GratuityResult {
   const beyondFiveYearDays = yearsBeyondFive * 30;
   const totalDays = firstFiveYearDays + beyondFiveYearDays;
 
-  const grossAmount = totalDays * dailyBasicWage;
+  const grossAmount = M.quantize(M.mul(dailyBasicWage, totalDays));
 
   // Statutory ceiling: the total may not exceed two years' total remuneration.
-  const ceiling = totalSalary * 24;
-  const capped = grossAmount > ceiling;
+  const ceiling = M.quantize(M.mul(M.money(totalSalary), 24));
+  const capped = M.gt(grossAmount, ceiling);
   const amount = capped ? ceiling : grossAmount;
 
   const yearsLabel = serviceYears.toFixed(2);
   const explanation = capped
     ? `${yearsLabel} years of service → ${totalDays.toFixed(1)} days' basic wage, ` +
-      `capped at two years' total wage (${ceiling.toFixed(2)}).`
+      `capped at two years' total wage (${M.toDisplay(ceiling)}).`
     : `${yearsLabel} years of service → ${firstFiveYearDays.toFixed(1)} days at 21/year` +
       (yearsBeyondFive > 0 ? ` plus ${beyondFiveYearDays.toFixed(1)} days at 30/year` : "") +
-      `, at a daily basic wage of ${dailyBasicWage.toFixed(2)}.`;
+      `, at a daily basic wage of ${M.toDisplay(dailyBasicWage)}.`;
 
   return {
     entitled: true,
     serviceDays,
     serviceYears,
-    dailyBasicWage,
+    dailyBasicWage: M.toNumber(dailyBasicWage),
     firstFiveYearDays,
     beyondFiveYearDays,
     totalDays,
-    grossAmount,
-    cappedAt: capped ? ceiling : null,
-    amount,
+    grossAmount: M.toNumber(grossAmount),
+    cappedAt: capped ? M.toNumber(ceiling) : null,
+    amount: M.toNumber(amount),
     explanation,
   };
 }
@@ -152,7 +160,9 @@ export function monthlyGratuityAccrual(
 ): { accrual: number; closingLiability: number; result: GratuityResult } {
   const result = calculateGratuity(input);
   return {
-    accrual: result.amount - alreadyAccrued,
+    // Exact: the accrual is the movement in the liability, and a float
+    // subtraction here would drift the balance every month it is posted.
+    accrual: M.toNumber(M.sub(M.money(result.amount), M.money(alreadyAccrued))),
     closingLiability: result.amount,
     result,
   };

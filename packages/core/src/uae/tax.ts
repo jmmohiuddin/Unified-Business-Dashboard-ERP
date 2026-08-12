@@ -14,6 +14,8 @@
 
 // ── Corporate tax ───────────────────────────────────────────────────────────
 
+import * as M from "../money/index.ts";
+
 export const CT_THRESHOLD = 375_000; // AED — taxable income taxed at 0% below this
 export const CT_RATE = 0.09;
 export const SBR_REVENUE_CAP = 3_000_000; // AED — Small Business Relief ceiling
@@ -205,24 +207,43 @@ export function calculateVatReturn(input: VatReturnInput): VatReturnResult {
   const notes: string[] = [];
 
   // Zero-rated supplies count as taxable for apportionment; exempt do not.
-  const taxableSupplies = standardRatedSupplies + zeroRatedSupplies;
-  const totalSupplies = taxableSupplies + exemptSupplies;
-  const recoveryRatio = totalSupplies > 0 ? taxableSupplies / totalSupplies : 1;
+  // Exact decimal throughout. The recovery ratio is a division that almost
+  // never terminates, and it multiplies the residual input VAT that goes on the
+  // return — an error here is a misstated reclaim to the FTA, where a
+  // difference above AED 10,000 triggers a mandatory voluntary disclosure.
+  //
+  // The irrecoverable portion is taken as the REMAINDER of the residual rather
+  // than recomputed from (1 - ratio), so recoverable + irrecoverable always
+  // equals the residual exactly and the return's own boxes reconcile.
+  const taxable = M.add(M.money(standardRatedSupplies), M.money(zeroRatedSupplies));
+  const exempt = M.money(exemptSupplies);
+  const totalSup = M.add(taxable, exempt);
+  const residual = M.money(residualInput);
 
-  const recoverableResidual = residualInput * recoveryRatio;
-  const totalRecoverableInput = directlyAttributableInput + recoverableResidual;
-  const irrecoverableInput =
-    exemptAttributableInput + (residualInput - recoverableResidual);
+  const ratio = M.gt(totalSup, M.ZERO) ? M.div(taxable, totalSup) : M.money(1);
+  const recoverableResidualM = M.quantize(M.mul(residual, ratio));
+  const totalRecoverableInputM = M.add(M.money(directlyAttributableInput), recoverableResidualM);
+  const irrecoverableInputM = M.add(
+    M.money(exemptAttributableInput),
+    M.sub(residual, recoverableResidualM),
+  );
+
+  const taxableSupplies = M.toNumber(taxable);
+  const totalSupplies = M.toNumber(totalSup);
+  const recoveryRatio = M.toNumber(ratio);
+  const recoverableResidual = M.toNumber(recoverableResidualM);
+  const totalRecoverableInput = M.toNumber(totalRecoverableInputM);
+  const irrecoverableInput = M.toNumber(irrecoverableInputM);
 
   if (exemptSupplies > 0) {
     notes.push(
       `Exempt (residential) supplies are ${((exemptSupplies / totalSupplies) * 100).toFixed(1)}% ` +
         `of turnover, so only ${(recoveryRatio * 100).toFixed(1)}% of residual input VAT is ` +
-        `recoverable. ${irrecoverableInput.toFixed(2)} AED is a cost, not a reclaim.`,
+        `recoverable. ${M.toDisplay(irrecoverableInputM)} AED is a cost, not a reclaim.`,
     );
   }
 
-  const netVatDue = outputVat - totalRecoverableInput;
+  const netVatDue = M.toNumber(M.sub(M.money(outputVat), totalRecoverableInputM));
 
   return {
     boxes: {
