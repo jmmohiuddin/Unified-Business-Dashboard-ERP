@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import * as M from "../money/index.ts";
 import {
   ServiceError,
   nextDocumentNumber,
@@ -99,32 +100,42 @@ export async function createInvoice(
     }
 
     // ── Price and tax every line ────────────────────────────────────────────
-    let subtotal = 0, taxTotal = 0, costTotal = 0;
+    let subtotal = M.ZERO, taxTotal = M.ZERO, costTotal = M.ZERO;
     const priced = input.lines.map((line, i) => {
       const item = byId.get(line.itemId)!;
-      const unitPrice = line.unitPrice ?? Number(item.sale_price);
-      const gross = unitPrice * line.quantity;
-      const rate = Number(item.tax_rate ?? 0);
+      const qty = M.money(line.quantity);
+      const unitPrice = line.unitPrice !== undefined && line.unitPrice !== null
+        ? M.money(line.unitPrice)
+        : M.fromDb(item.sale_price);
+      const gross = M.quantize(M.mul(unitPrice, qty));
+      const rate = M.fromDb(item.tax_rate);
       const inclusive = Boolean(item.tax_inclusive);
 
       // Exempt and zero-rated both charge nothing; the difference is on the
       // input side and is handled by the tax code's treatment, not here.
-      let net: number, tax: number, lineTotal: number;
-      if (rate === 0) {
-        net = gross; tax = 0; lineTotal = gross;
+      let net: M.Money, tax: M.Money, lineTotal: M.Money;
+      if (M.isZero(rate)) {
+        net = gross; tax = M.ZERO; lineTotal = gross;
       } else if (inclusive) {
-        net = gross / (1 + rate); tax = gross - net; lineTotal = gross;
+        // gross / (1 + rate) never terminates in binary at 5%. Backing the net
+        // out and taking tax as the REMAINDER guarantees net + tax === gross
+        // exactly, which is what the printed invoice has to show.
+        net = M.quantize(M.div(gross, M.add(M.money(1), rate)));
+        tax = M.sub(gross, net);
+        lineTotal = gross;
       } else {
-        net = gross; tax = gross * rate; lineTotal = gross + tax;
+        net = gross; tax = M.quantize(M.mul(gross, rate)); lineTotal = M.add(gross, tax);
       }
 
-      const unitCost = Number(item.cost_price);
-      subtotal += net; taxTotal += tax; costTotal += unitCost * line.quantity;
+      const unitCost = M.fromDb(item.cost_price);
+      subtotal = M.add(subtotal, net);
+      taxTotal = M.add(taxTotal, tax);
+      costTotal = M.add(costTotal, M.quantize(M.mul(unitCost, qty)));
 
       return { line, item, lineNo: i + 1, unitPrice, net, tax, lineTotal, unitCost };
     });
 
-    const total = subtotal + taxTotal;
+    const total = M.add(subtotal, taxTotal);
     const dueDate = new Date(`${input.issueDate}T00:00:00Z`);
     dueDate.setUTCDate(dueDate.getUTCDate() + input.dueDays);
 
@@ -153,9 +164,9 @@ export async function createInvoice(
          'invoice', ${docNumber}, ${paidNow ? "paid" : "sent"}::doc_status, 'in',
          ${input.partyId ?? null}::uuid, ${partyName}, ${input.issueDate}::date,
          ${dueDate.toISOString().slice(0, 10)}::date, 0, ${ctx.baseCurrency},
-         ${subtotal.toFixed(4)}, ${taxTotal.toFixed(4)}, ${total.toFixed(4)},
-         ${(paidNow ? total : 0).toFixed(4)}, ${(paidNow ? 0 : total).toFixed(4)},
-         ${total.toFixed(4)}, ${costTotal.toFixed(4)}, now(), ${input.notes ?? null})
+         ${M.toDb(subtotal)}, ${M.toDb(taxTotal)}, ${M.toDb(total)},
+         ${M.toDb(paidNow ? total : M.ZERO)}, ${M.toDb(paidNow ? M.ZERO : total)},
+         ${M.toDb(total)}, ${M.toDb(costTotal)}, now(), ${input.notes ?? null})
       RETURNING id
     `);
     const documentId = doc[0]!.id;
@@ -169,10 +180,10 @@ export async function createInvoice(
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${documentId}::uuid, ${p.lineNo},
            ${p.line.itemId}::uuid, ${p.line.serialUnitId ?? null}::uuid,
-           ${p.line.description ?? p.item.name}, ${p.line.quantity.toFixed(4)},
-           ${p.unitPrice.toFixed(4)}, ${p.item.tax_code_id ?? null}::uuid,
-           ${Number(p.item.tax_rate ?? 0).toFixed(6)}, ${p.tax.toFixed(4)},
-           ${p.lineTotal.toFixed(4)}, ${p.unitCost.toFixed(4)},
+           ${p.line.description ?? p.item.name}, ${M.toDb(M.money(p.line.quantity))},
+           ${M.toDb(p.unitPrice)}, ${p.item.tax_code_id ?? null}::uuid,
+           ${M.fromDb(p.item.tax_rate).toFixed(6)}, ${M.toDb(p.tax)},
+           ${M.toDb(p.lineTotal)}, ${M.toDb(p.unitCost)},
            ${p.line.employeeId ?? null}::uuid, ${p.line.jobId ?? null}::uuid)
       `);
 
@@ -191,12 +202,12 @@ export async function createInvoice(
             VALUES
               (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.businessUnitId}::uuid,
                ${wh[0]!.id}::uuid, ${p.line.itemId}::uuid, ${p.line.serialUnitId ?? null}::uuid,
-               ${(-p.line.quantity).toFixed(4)}, ${p.unitCost.toFixed(4)}, 'sale',
+               ${M.toDb(M.neg(M.money(p.line.quantity)))}, ${M.toDb(p.unitCost)}, 'sale',
                'documents', ${documentId}::uuid, now())
           `);
           await ctx.tx.execute(sql`
             UPDATE stock_levels
-               SET on_hand = on_hand - ${p.line.quantity.toFixed(4)}, updated_at = now()
+               SET on_hand = on_hand - ${M.toDb(M.money(p.line.quantity))}, updated_at = now()
              WHERE warehouse_id = ${wh[0]!.id}::uuid AND item_id = ${p.line.itemId}::uuid
           `);
         }
@@ -209,7 +220,7 @@ export async function createInvoice(
         await ctx.tx.execute(sql`
           UPDATE serial_units
              SET status = 'sold', sold_to_party_id = ${input.partyId ?? null}::uuid,
-                 sold_on = ${input.issueDate}::date, sold_price = ${p.unitPrice.toFixed(4)},
+                 sold_on = ${input.issueDate}::date, sold_price = ${M.toDb(p.unitPrice)},
                  warranty_ends_on = ${warranty.toISOString().slice(0, 10)}::date,
                  warehouse_id = NULL, updated_at = now()
            WHERE id = ${p.line.serialUnitId}::uuid
@@ -234,13 +245,13 @@ export async function createInvoice(
         { accountKey: "AR", businessUnitId: input.businessUnitId, debit: total,
           partyId: input.partyId ?? null },
         { accountKey: revenueKey, businessUnitId: input.businessUnitId, credit: subtotal },
-        ...(taxTotal > 0
+        ...(M.gt(taxTotal, M.ZERO)
           ? [{ accountKey: "VAT_OUTPUT", businessUnitId: input.businessUnitId, credit: taxTotal }]
           : []),
       ],
     });
 
-    if (costTotal > 0) {
+    if (M.gt(costTotal, M.ZERO)) {
       await postJournal(ctx, {
         postingDate: input.issueDate,
         source: "invoice",
@@ -269,15 +280,15 @@ export async function createInvoice(
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.businessUnitId}::uuid,
            ${payNumber}, 'in', ${input.partyId ?? null}::uuid,
-           ${input.payment!.method}::payment_method, ${total.toFixed(4)}, ${ctx.baseCurrency},
-           ${total.toFixed(4)}, '0', ${input.issueDate}::date,
+           ${input.payment!.method}::payment_method, ${M.toDb(total)}, ${ctx.baseCurrency},
+           ${M.toDb(total)}, '0', ${input.issueDate}::date,
            ${ctx.principal.userId}::uuid, now())
         RETURNING id
       `);
       await ctx.tx.execute(sql`
         INSERT INTO payment_allocations (id, tenant_id, payment_id, document_id, amount)
         VALUES (gen_random_uuid(), ${ctx.tenantId}::uuid, ${pay[0]!.id}::uuid,
-                ${documentId}::uuid, ${total.toFixed(4)})
+                ${documentId}::uuid, ${M.toDb(total)})
       `);
       await postJournal(ctx, {
         postingDate: input.issueDate,
@@ -296,8 +307,8 @@ export async function createInvoice(
     if (input.partyId) {
       await ctx.tx.execute(sql`
         UPDATE parties
-           SET lifetime_value = lifetime_value + ${total.toFixed(4)},
-               open_balance = open_balance + ${(paidNow ? 0 : total).toFixed(4)},
+           SET lifetime_value = lifetime_value + ${M.toDb(total)},
+               open_balance = open_balance + ${M.toDb(paidNow ? M.ZERO : total)},
                visit_count = visit_count + 1,
                last_transaction_at = now(), rfm_recency = 0, churn_risk = 'low'
          WHERE id = ${input.partyId}::uuid
@@ -312,6 +323,13 @@ export async function createInvoice(
       diff: { docNumber, total, taxTotal, lines: priced.length, paidNow },
     });
 
-    return { documentId, docNumber, subtotal, taxTotal, total, paid: paidNow };
+    return {
+      documentId,
+      docNumber,
+      subtotal: M.toNumber(subtotal),
+      taxTotal: M.toNumber(taxTotal),
+      total: M.toNumber(total),
+      paid: paidNow,
+    };
   });
 }
