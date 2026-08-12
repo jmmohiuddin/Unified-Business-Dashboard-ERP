@@ -20,3 +20,4 @@ export * from "./credit-notes.ts";
 export * from "./operations.ts";
 export * from "./notifications.ts";
 export * from "./outbox.ts";
+export * from "./users.ts";

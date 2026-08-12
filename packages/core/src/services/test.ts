@@ -15,6 +15,8 @@ import { config } from "dotenv";
 import { sql } from "drizzle-orm";
 import { adminDb, appDb } from "@nexus/db";
 import {
+  changeRole,
+  deactivateUser,
   ServiceError,
   bookAppointment,
   completeJob,
@@ -513,6 +515,88 @@ async function main() {
         twice = err instanceof ServiceError && err.code === "invalid";
       }
       check("crediting more than the invoice is rejected", twice);
+    });
+  }
+
+  // ── Offboarding ───────────────────────────────────────────────────────────
+  //
+  // The behaviour that makes deactivation mean anything: it must kill live
+  // sessions in the same transaction. A membership marked inactive while a
+  // valid cookie still opens the dashboard is a note, not an offboarding.
+  {
+    console.log("\nUser management");
+    await inRollback(tenantId, userId, async (base) => {
+      const ctx: ServiceContext = {
+        ...base,
+        principal: principal({
+          userId, tenantId,
+          permissions: new Set(["user:read", "user:update", "user:delete"]),
+        }),
+      };
+
+      const [victim] = await ctx.tx.execute<{ membership_id: string; user_id: string }>(sql`
+        SELECT m.id AS membership_id, m.user_id
+          FROM memberships m JOIN roles r ON r.id = m.role_id
+         WHERE r.key = 'barber' AND m.status = 'active' LIMIT 1
+      `);
+
+      // Two live sessions, so we prove ALL of them go, not just the newest.
+      for (const n of [1, 2]) {
+        await ctx.tx.execute(sql`
+          INSERT INTO sessions (id, user_id, active_tenant_id, token_hash, expires_at)
+          VALUES (gen_random_uuid(), ${victim!.user_id}::uuid, ${tenantId}::uuid,
+                  ${`offboard-probe-${n}`}, now() + interval '7 days')
+        `);
+      }
+      const before = await ctx.tx.execute<{ n: number }>(sql`
+        SELECT COUNT(*)::int n FROM sessions
+         WHERE user_id = ${victim!.user_id}::uuid AND revoked_at IS NULL
+      `);
+      check("a user starts with live sessions", Number(before[0]!.n) >= 2, `${before[0]!.n}`);
+
+      const res = await deactivateUser(ctx, {
+        membershipId: victim!.membership_id,
+        reason: "regression check",
+        idempotencyKey: `deact-${Date.now()}`,
+      });
+
+      const [after] = await ctx.tx.execute<{ status: string; live: number }>(sql`
+        SELECT m.status::text,
+               (SELECT COUNT(*)::int FROM sessions s
+                 WHERE s.user_id = m.user_id AND s.revoked_at IS NULL) AS live
+          FROM memberships m WHERE m.id = ${victim!.membership_id}::uuid
+      `);
+      check("deactivating suspends the membership", after!.status === "suspended", after!.status);
+      check("deactivating revokes EVERY live session", Number(after!.live) === 0,
+        `${after!.live} left, ${res!.sessionsRevoked} revoked`);
+
+      const [logged] = await ctx.tx.execute<{ n: number }>(sql`
+        SELECT COUNT(*)::int n FROM audit_log WHERE action = 'user.deactivate'
+      `);
+      check("deactivation is audited", Number(logged!.n) > 0);
+
+      // Self-deactivation would lock the actor out of the screen they are on,
+      // possibly with nobody left able to undo it.
+      const [own] = await ctx.tx.execute<{ id: string }>(sql`
+        SELECT id FROM memberships WHERE user_id = ${userId}::uuid LIMIT 1
+      `);
+      let refusedSelf = false;
+      try {
+        await deactivateUser(ctx, {
+          membershipId: own!.id, reason: "should be refused",
+          idempotencyKey: `self-${Date.now()}`,
+        });
+      } catch { refusedSelf = true; }
+      check("you cannot deactivate your own access", refusedSelf);
+
+      let refusedRole = false;
+      try {
+        await changeRole(ctx, {
+          membershipId: own!.id, roleKey: "barber",
+          idempotencyKey: `selfrole-${Date.now()}`,
+        });
+      } catch { refusedRole = true; }
+      check("you cannot change your own role", refusedRole);
     });
   }
 

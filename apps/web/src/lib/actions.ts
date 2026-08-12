@@ -11,10 +11,13 @@ import {
   createCreditNote,
   createInvoice,
   createJob,
+  changeRole,
   createPurchaseOrder,
+  deactivateUser,
   markAllRead,
   markNotificationRead,
   payBill,
+  reactivateUser,
   receiveBill,
   recordPayment,
   setAppointmentStatus,
@@ -507,4 +510,71 @@ export async function markAllNotificationsReadAction(): Promise<ActionResult> {
   revalidatePath("/inbox");
   revalidatePath("/", "layout");
   return { ok: true, message: `${n} marked read.` };
+}
+
+// ── User management ─────────────────────────────────────────────────────────
+
+export async function deactivateUserAction(formData: FormData): Promise<ActionResult> {
+  const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
+  try {
+    const result = await withTenant(
+      { tenantId: session.tenantId, userId: session.userId },
+      async (tx) =>
+        deactivateUser(await buildContext(tx, session), {
+          membershipId: str(formData, "membershipId"),
+          reason: str(formData, "reason") ?? "No reason given",
+          idempotencyKey: str(formData, "idempotencyKey"),
+        }),
+    );
+    revalidatePath("/settings/users");
+    return {
+      ok: true,
+      message: `Access removed. ${result.sessionsRevoked} active session${
+        result.sessionsRevoked === 1 ? "" : "s"
+      } signed out immediately.`,
+    };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
+export async function reactivateUserAction(formData: FormData): Promise<ActionResult> {
+  const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
+  try {
+    await withTenant({ tenantId: session.tenantId, userId: session.userId }, async (tx) =>
+      reactivateUser(await buildContext(tx, session), {
+        membershipId: str(formData, "membershipId"),
+        idempotencyKey: str(formData, "idempotencyKey"),
+      }),
+    );
+    revalidatePath("/settings/users");
+    return { ok: true, message: "Access restored. They can sign in again." };
+  } catch (err) {
+    return toResult(err);
+  }
+}
+
+export async function changeRoleAction(formData: FormData): Promise<ActionResult> {
+  const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
+  try {
+    const result = await withTenant(
+      { tenantId: session.tenantId, userId: session.userId },
+      async (tx) =>
+        changeRole(await buildContext(tx, session), {
+          membershipId: str(formData, "membershipId"),
+          roleKey: str(formData, "roleKey"),
+          idempotencyKey: str(formData, "idempotencyKey"),
+        }),
+    );
+    revalidatePath("/settings/users");
+    return { ok: true, message: `Role changed to ${result.roleKey}. It applies on their next request.` };
+  } catch (err) {
+    return toResult(err);
+  }
 }

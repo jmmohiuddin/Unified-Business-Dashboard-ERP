@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { can } from "@nexus/core";
 import { destroySession, requireSession, revokeAllSessions } from "@/lib/session";
 import { loadBusinessUnits, loadNotifications } from "@/lib/data";
 import { BU_COLOR } from "@/components/ui";
@@ -131,6 +132,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               {session.principal.roleKey.replace(/_/g, " ")} · security settings
             </p>
           </Link>
+          {can(session.principal, "user:read") && (
+            <Link
+              href="/settings/users"
+              className="block px-2.5 py-1.5 rounded-[var(--radius-md)] hover:bg-surface-2 transition-colors text-2xs text-subtle"
+            >
+              People and access
+            </Link>
+          )}
           <form action={signOut}>
             <button type="submit" className="btn btn-ghost w-full justify-start text-xs">
               Sign out

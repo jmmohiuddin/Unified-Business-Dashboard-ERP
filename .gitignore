@@ -11,3 +11,7 @@ coverage/
 packages/db/drizzle/meta/_journal.json.bak
 backups/
 .vercel
+
+# Local agent tooling — not part of this project.
+.agents/
+superpowers/
