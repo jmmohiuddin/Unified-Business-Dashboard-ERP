@@ -22,6 +22,7 @@ import {
   type ServiceContext,
 } from "@nexus/core";
 import { requireSession } from "./session";
+import { rateLimit } from "./rate-limit";
 import { resolveToday } from "./data";
 
 /**
@@ -60,6 +61,30 @@ async function buildContext(tx: Tx, session: Session): Promise<ServiceContext> {
   };
 }
 
+/**
+ * Write throttle.
+ *
+ * Every mutating action was unthrottled: the login form and the read API were
+ * rate-limited, but the fourteen paths that actually move money were not. A
+ * session cookie plus a loop could post journals as fast as the database would
+ * accept them.
+ *
+ * Keyed by user rather than IP — the authenticated session is the capability
+ * being abused, and an IP key is both spoofable and shared behind NAT. 120/min
+ * is far beyond human form-filling and far below what a script wants.
+ *
+ * This is a blunt backstop, not a business rule. Per-action limits belong with
+ * the approval gates in the automation engine, not here.
+ */
+async function writeBudget(userId: string): Promise<ActionResult | null> {
+  const limit = await rateLimit(`write:${userId}`, 120, 60);
+  if (limit.allowed) return null;
+  return {
+    ok: false,
+    message: "Too many changes in a short time. Wait a moment and try again.",
+  };
+}
+
 /** Turn a thrown error into something a form can display. */
 function toResult(err: unknown): ActionResult {
   if (err instanceof ServiceError) return { ok: false, message: err.message };
@@ -82,6 +107,8 @@ const str = (fd: FormData, key: string): string | undefined => {
 
 export async function recordPaymentAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -118,6 +145,8 @@ export async function recordPaymentAction(formData: FormData): Promise<ActionRes
 
 export async function chequeAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const action = str(formData, "action") ?? "deposit";
     await withTenant({ tenantId: session.tenantId, userId: session.userId }, async (tx) =>
@@ -150,6 +179,8 @@ export async function chequeAction(formData: FormData): Promise<ActionResult> {
 
 export async function createInvoiceAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -185,6 +216,8 @@ export async function createInvoiceAction(formData: FormData): Promise<ActionRes
 
 export async function bookAppointmentAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -214,6 +247,8 @@ export async function bookAppointmentAction(formData: FormData): Promise<ActionR
 
 export async function appointmentStatusAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     await withTenant({ tenantId: session.tenantId, userId: session.userId }, async (tx) =>
       setAppointmentStatus(await buildContext(tx, session), {
@@ -232,6 +267,8 @@ export async function appointmentStatusAction(formData: FormData): Promise<Actio
 
 export async function createJobAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -265,6 +302,8 @@ export async function createJobAction(formData: FormData): Promise<ActionResult>
 
 export async function completeJobAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -286,6 +325,8 @@ export async function completeJobAction(formData: FormData): Promise<ActionResul
 
 export async function receiveBillAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -319,6 +360,8 @@ export async function receiveBillAction(formData: FormData): Promise<ActionResul
 
 export async function payBillAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -344,6 +387,8 @@ export async function payBillAction(formData: FormData): Promise<ActionResult> {
 
 export async function createPurchaseOrderAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -373,6 +418,8 @@ export async function createPurchaseOrderAction(formData: FormData): Promise<Act
 
 export async function adjustStockAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   // "warehouseId::businessUnitId" — the warehouse dropdown carries its owning
   // business so the variance posts to the right P&L regardless of which one.
   const [warehouseId, businessUnitId] = (str(formData, "warehouseRef") ?? "").split("::");
@@ -408,6 +455,8 @@ export async function adjustStockAction(formData: FormData): Promise<ActionResul
 
 export async function createCreditNoteAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   try {
     const result = await withTenant(
       { tenantId: session.tenantId, userId: session.userId },
@@ -436,6 +485,8 @@ export async function createCreditNoteAction(formData: FormData): Promise<Action
 
 export async function markNotificationReadAction(formData: FormData): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   const id = str(formData, "id");
   if (!id) return { ok: false };
   await withTenant({ tenantId: session.tenantId, userId: session.userId }, (tx) =>
@@ -448,6 +499,8 @@ export async function markNotificationReadAction(formData: FormData): Promise<Ac
 
 export async function markAllNotificationsReadAction(): Promise<ActionResult> {
   const session = await requireSession();
+  const throttled = await writeBudget(session.userId);
+  if (throttled) return throttled;
   const n = await withTenant({ tenantId: session.tenantId, userId: session.userId }, (tx) =>
     markAllRead(tx, session.tenantId),
   );
