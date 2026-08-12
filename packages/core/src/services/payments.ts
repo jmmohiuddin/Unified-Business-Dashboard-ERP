@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
+import * as M from "../money/index.ts";
 import {
   ServiceError,
   nextDocumentNumber,
@@ -75,7 +76,10 @@ export async function recordPayment(
     if (bu.length === 0) throw new ServiceError("Business not found.", "not_found");
 
     // ── Decide what this payment settles ────────────────────────────────────
-    let targets: { documentId: string; amount: number }[] = input.allocations ?? [];
+    const amount = M.money(input.amount);
+    let targets: { documentId: string; amount: M.Money }[] = (input.allocations ?? []).map(
+      (a) => ({ documentId: a.documentId, amount: M.money(a.amount) }),
+    );
 
     if (targets.length === 0 && input.autoAllocate && input.partyId) {
       // Oldest first. It is what customers assume, and it is what keeps the
@@ -89,18 +93,18 @@ export async function recordPayment(
            AND status NOT IN ('cancelled','void','draft')
          ORDER BY due_date ASC NULLS LAST, issue_date ASC
       `);
-      let remaining = input.amount;
+      let remaining = amount;
       for (const inv of open) {
-        if (remaining <= 0.005) break;
-        const take = Math.min(remaining, Number(inv.amount_due));
+        if (!M.gt(remaining, M.ZERO)) break;
+        const take = M.min(remaining, M.fromDb(inv.amount_due));
         targets.push({ documentId: inv.id, amount: take });
-        remaining -= take;
+        remaining = M.sub(remaining, take);
       }
     }
 
     // ── Validate every allocation before writing anything ───────────────────
     const settled: RecordPaymentResult["settledInvoices"] = [];
-    let allocatedTotal = 0;
+    let allocatedTotal = M.ZERO;
 
     for (const t of targets) {
       const rows = await ctx.tx.execute<{
@@ -114,23 +118,26 @@ export async function recordPayment(
 
       // Over-allocation is a data-integrity bug, not a rounding nicety: it
       // produces a negative balance that silently understates receivables.
-      if (t.amount > Number(doc.amount_due) + 0.005) {
+      // Exact. The `+ 0.005` was float slack, and it let a half-fils
+      // over-allocation through on every invoice.
+      const due = M.fromDb(doc.amount_due);
+      if (M.gt(t.amount, due)) {
         throw new ServiceError(
-          `Cannot allocate ${t.amount.toFixed(2)} to ${doc.doc_number} — only ${Number(doc.amount_due).toFixed(2)} is outstanding.`,
+          `Cannot allocate ${M.toDisplay(t.amount)} to ${doc.doc_number} — only ${M.toDisplay(due)} is outstanding.`,
           "invalid",
         );
       }
-      allocatedTotal += t.amount;
+      allocatedTotal = M.add(allocatedTotal, t.amount);
     }
 
-    if (allocatedTotal > input.amount + 0.005) {
+    if (M.gt(allocatedTotal, amount)) {
       throw new ServiceError(
-        `Allocations total ${allocatedTotal.toFixed(2)} but the payment is ${input.amount.toFixed(2)}.`,
+        `Allocations total ${M.toDisplay(allocatedTotal)} but the payment is ${M.toDisplay(amount)}.`,
         "invalid",
       );
     }
 
-    const unallocated = Math.max(0, input.amount - allocatedTotal);
+    const unallocated = M.max(M.ZERO, M.sub(amount, allocatedTotal));
     const paymentNumber = await nextDocumentNumber(
       ctx, input.businessUnitId, "payment", `PAY-${bu[0]!.code}`,
     );
@@ -144,8 +151,8 @@ export async function recordPayment(
       VALUES
         (gen_random_uuid(), ${ctx.tenantId}::uuid, ${input.businessUnitId}::uuid,
          ${paymentNumber}, 'in', ${input.partyId ?? null}::uuid, ${input.method}::payment_method,
-         ${input.amount.toFixed(4)}, ${ctx.baseCurrency}, ${input.amount.toFixed(4)},
-         ${unallocated.toFixed(4)}, ${input.receivedOn}::date, ${input.reference ?? null},
+         ${M.toDb(amount)}, ${ctx.baseCurrency}, ${M.toDb(amount)},
+         ${M.toDb(unallocated)}, ${input.receivedOn}::date, ${input.reference ?? null},
          ${ctx.principal.userId}::uuid, now(), ${input.note ?? null})
       RETURNING id
     `);
@@ -155,17 +162,20 @@ export async function recordPayment(
       await ctx.tx.execute(sql`
         INSERT INTO payment_allocations (id, tenant_id, payment_id, document_id, amount)
         VALUES (gen_random_uuid(), ${ctx.tenantId}::uuid, ${paymentId}::uuid,
-                ${t.documentId}::uuid, ${t.amount.toFixed(4)})
+                ${t.documentId}::uuid, ${M.toDb(t.amount)})
       `);
       const upd = await ctx.tx.execute<{ doc_number: string; amount_due: string }>(sql`
         UPDATE documents
-           SET amount_paid = amount_paid + ${t.amount.toFixed(4)},
-               amount_due  = GREATEST(0, total - (amount_paid + ${t.amount.toFixed(4)})),
+           SET amount_paid = amount_paid + ${M.toDb(t.amount)},
+               -- GREATEST(0, ...) removed: it clamped a negative balance to zero,
+               -- silently absorbing an over-allocation and destroying the evidence.
+               -- Over-allocation is refused above, so a negative means a real bug.
+               amount_due  = total - (amount_paid + ${M.toDb(t.amount)}),
                status = CASE
-                 WHEN total - (amount_paid + ${t.amount.toFixed(4)}) <= 0.01 THEN 'paid'::doc_status
+                 WHEN total - (amount_paid + ${M.toDb(t.amount)}) <= 0 THEN 'paid'::doc_status
                  ELSE 'partially_paid'::doc_status END,
                days_overdue = CASE
-                 WHEN total - (amount_paid + ${t.amount.toFixed(4)}) <= 0.01 THEN 0
+                 WHEN total - (amount_paid + ${M.toDb(t.amount)}) <= 0 THEN 0
                  ELSE days_overdue END,
                updated_at = now()
          WHERE id = ${t.documentId}::uuid
@@ -174,8 +184,8 @@ export async function recordPayment(
       settled.push({
         documentId: t.documentId,
         docNumber: upd[0]!.doc_number,
-        amount: t.amount,
-        nowPaid: Number(upd[0]!.amount_due) <= 0.01,
+        amount: M.toNumber(t.amount),
+        nowPaid: !M.gt(M.fromDb(upd[0]!.amount_due), M.ZERO),
       });
     }
 
@@ -186,13 +196,13 @@ export async function recordPayment(
       {
         accountKey: CASH_ACCOUNT[input.method] ?? "BANK",
         businessUnitId: input.businessUnitId,
-        debit: input.amount,
+        debit: amount,
       },
-      ...(allocatedTotal > 0
+      ...(M.gt(allocatedTotal, M.ZERO)
         ? [{ accountKey: "AR", businessUnitId: input.businessUnitId,
              credit: allocatedTotal, partyId: input.partyId ?? null }]
         : []),
-      ...(unallocated > 0
+      ...(M.gt(unallocated, M.ZERO)
         ? [{ accountKey: "CUSTOMER_ADVANCE", businessUnitId: input.businessUnitId,
              credit: unallocated, partyId: input.partyId ?? null }]
         : []),
@@ -212,7 +222,7 @@ export async function recordPayment(
     if (input.partyId) {
       await ctx.tx.execute(sql`
         UPDATE parties
-           SET open_balance = GREATEST(0, open_balance - ${allocatedTotal.toFixed(4)}),
+           SET open_balance = GREATEST(0, open_balance - ${M.toDb(allocatedTotal)}),
                last_transaction_at = now()
          WHERE id = ${input.partyId}::uuid
       `);
@@ -227,8 +237,8 @@ export async function recordPayment(
         paymentNumber,
         amount: input.amount,
         method: input.method,
-        allocated: allocatedTotal,
-        unallocated,
+        allocated: M.toDb(allocatedTotal),
+        unallocated: M.toDb(unallocated),
         invoices: settled.map((s) => s.docNumber),
       },
     });
@@ -236,8 +246,8 @@ export async function recordPayment(
     return {
       paymentId,
       paymentNumber,
-      allocated: allocatedTotal,
-      unallocated,
+      allocated: M.toNumber(allocatedTotal),
+      unallocated: M.toNumber(unallocated),
       settledInvoices: settled,
     };
   });
@@ -303,7 +313,7 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
       );
     }
 
-    const amount = Number(cheque.amount);
+    const chequeAmount = M.fromDb(cheque.amount);
 
     if (input.action === "deposit") {
       await ctx.tx.execute(sql`
@@ -331,19 +341,21 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
           `)
         : [];
 
-      let remaining = amount;
+      let remaining = chequeAmount;
       const allocations: { documentId: string; amount: number }[] = [];
       for (const doc of covered) {
-        if (remaining <= 0.005) break;
-        const take = Math.min(remaining, Number(doc.amount_due));
-        allocations.push({ documentId: doc.id, amount: take });
-        remaining -= take;
+        if (!M.gt(remaining, M.ZERO)) break;
+        const take = M.min(remaining, M.fromDb(doc.amount_due));
+        // recordPayment's input schema is numbers at the API boundary; it
+        // re-enters Money immediately on the other side.
+        allocations.push({ documentId: doc.id, amount: M.toNumber(take) });
+        remaining = M.sub(remaining, take);
       }
 
       const result = await recordPayment(ctx, {
         businessUnitId: cheque.business_unit_id,
         partyId: cheque.party_id,
-        amount,
+        amount: M.toNumber(chequeAmount),
         method: "cheque",
         receivedOn: input.onDate,
         reference: `Cheque ${cheque.cheque_number} cleared`,
@@ -364,7 +376,7 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
         UPDATE cheques
            SET status = 'bounced', bounced_on = ${input.onDate}::date,
                bounce_reason = ${input.bounceReason ?? "Returned unpaid"},
-               bank_charge_amount = ${input.bankCharge.toFixed(4)}, updated_at = now()
+               bank_charge_amount = ${M.toDb(M.money(input.bankCharge))}, updated_at = now()
          WHERE id = ${cheque.id}::uuid
       `);
       if (input.bankCharge > 0) {
@@ -397,7 +409,7 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${cheque.business_unit_id}::uuid, 'in',
            ${cheque.party_id}::uuid, ${cheque.lease_id}::uuid, ${input.replacement.chequeNumber},
            ${input.replacement.bankName ?? cheque.bank_name},
-           ${input.replacement.chequeDate}::date, ${input.replacement.amount.toFixed(4)},
+           ${input.replacement.chequeDate}::date, ${M.toDb(M.money(input.replacement.amount))},
            ${ctx.baseCurrency}, 'held', ${cheque.period_start}::date, ${cheque.period_end}::date,
            ${input.onDate}::date, ${cheque.id}::uuid, 'Head office safe')
       `);
@@ -412,7 +424,8 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
       entityTable: "cheques",
       entityId: cheque.id,
       businessUnitId: cheque.business_unit_id,
-      diff: { from: cheque.status, chequeNumber: cheque.cheque_number, amount, ...input },
+      diff: { from: cheque.status, chequeNumber: cheque.cheque_number,
+              amount: M.toDb(chequeAmount), ...input },
     });
 
     return { chequeId: cheque.id, action: input.action };
