@@ -3,18 +3,23 @@
 # The app is deployed to Vercel as well; this is a second target, not a move.
 # Everything platform-specific is confined to this file and netlify/functions —
 # no application code branches on which host it is running under.
+#
+# Monorepo: install and build run from the workspace root so @nexus/core and
+# @nexus/db resolve; publish points at the Next output inside apps/web, which is
+# also how the Next runtime locates the app.
 
 [build]
-  # npm workspaces: install and build from the repo root so @nexus/core and
-  # @nexus/db resolve. Netlify's Next runtime finds the app from `publish`.
   command = "npm run build"
   publish = "apps/web/.next"
 
 [build.environment]
   NODE_VERSION = "22"
-  # The build must not reach for a database. `next build` type-checks and
-  # prerenders the three static pages; every other route is dynamic.
   NEXT_TELEMETRY_DISABLED = "1"
+
+# Declared rather than left to auto-detection: in a workspace the runtime is not
+# always picked up, and a Next site served without it degrades to static files.
+[[plugins]]
+  package = "@netlify/plugin-nextjs"
 
 [functions]
   directory = "netlify/functions"
@@ -22,11 +27,10 @@
 
 # ── Scheduled jobs ──────────────────────────────────────────────────────────
 #
-# Vercel Cron is declared in vercel.json and does not carry over. Netlify uses
-# scheduled functions, which have a 30-SECOND execution limit — the automation
-# sweep took 23s in production, so the schedulers deliberately trigger the
-# existing /api/cron/* routes and do not wait for them to finish. The job's own
-# run log in Postgres is the record of what happened, not the HTTP response.
+# vercel.json crons do not carry over. Netlify scheduled functions have a
+# 30-SECOND execution limit — the automation sweep took 23s in production — so
+# these trigger the existing /api/cron/* routes without waiting. The job_runs
+# table is the record of what happened, not the HTTP response.
 #
 # Times are UTC. Gulf Standard Time is UTC+4.
 [functions."cron-snapshots"]
