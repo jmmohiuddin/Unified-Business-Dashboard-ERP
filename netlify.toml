@@ -1,0 +1,42 @@
+# Netlify deployment.
+#
+# The app is deployed to Vercel as well; this is a second target, not a move.
+# Everything platform-specific is confined to this file and netlify/functions —
+# no application code branches on which host it is running under.
+
+[build]
+  # npm workspaces: install and build from the repo root so @nexus/core and
+  # @nexus/db resolve. Netlify's Next runtime finds the app from `publish`.
+  command = "npm run build"
+  publish = "apps/web/.next"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # The build must not reach for a database. `next build` type-checks and
+  # prerenders the three static pages; every other route is dynamic.
+  NEXT_TELEMETRY_DISABLED = "1"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# ── Scheduled jobs ──────────────────────────────────────────────────────────
+#
+# Vercel Cron is declared in vercel.json and does not carry over. Netlify uses
+# scheduled functions, which have a 30-SECOND execution limit — the automation
+# sweep took 23s in production, so the schedulers deliberately trigger the
+# existing /api/cron/* routes and do not wait for them to finish. The job's own
+# run log in Postgres is the record of what happened, not the HTTP response.
+#
+# Times are UTC. Gulf Standard Time is UTC+4.
+[functions."cron-snapshots"]
+  schedule = "50 20 * * *"   # 00:50 GST
+
+[functions."cron-briefing"]
+  schedule = "5 2 * * *"     # 06:05 GST
+
+[functions."cron-automation"]
+  schedule = "0 4 * * *"     # 08:00 GST
+
+[functions."cron-outbox"]
+  schedule = "30 4 * * *"    # 08:30 GST
