@@ -65,6 +65,11 @@ jobs:
       - name: Migration drift guard
         run: npm run check:migrations
 
+      # A tenant-scoped table added without regenerating its policy is the one
+      # schema change that silently costs isolation.
+      - name: RLS policy drift guard
+        run: npm run check:rls
+
       - name: Unit tests
         run: npm run test:unit
 

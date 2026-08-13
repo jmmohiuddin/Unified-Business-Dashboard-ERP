@@ -44,7 +44,9 @@
     "db:migrate": "npm run migrate -w @nexus/db",
     "db:generate": "npm run generate -w @nexus/db",
     "check:migrations": "node scripts/check-migrations.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "db:generate:rls": "npm run generate:rls -w @nexus/db",
+    "check:rls": "npm run generate:rls -w @nexus/db -- --check"
   },
   "devDependencies": {
     "dotenv": "^17.2.3",

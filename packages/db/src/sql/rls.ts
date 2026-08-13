@@ -74,7 +74,14 @@ export const GLOBAL_TABLES = [
   "audit_log",
 ];
 
-export function buildRlsStatements(
+/**
+ * Role creation and its password.
+ *
+ * Kept OUT of the migration files on purpose: a migration is committed to a
+ * public repository, and this statement carries a credential. It stays a
+ * runtime step driven by APP_ROLE_PASSWORD.
+ */
+export function buildRoleStatements(
   appRole = "nexus_app",
   appPassword = appRole,
 ): string[] {
@@ -97,6 +104,8 @@ export function buildRlsStatements(
   `);
 
   // The app role gets DML but never DDL and never BYPASSRLS.
+  // (Grants live with the role statements because they name the role but carry
+  //  no secret; they are replayed by the policy migration too, harmlessly.)
   stmts.push(`GRANT USAGE ON SCHEMA public TO ${appRole};`);
   stmts.push(
     `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${appRole};`,
@@ -128,6 +137,24 @@ export function buildRlsStatements(
       END IF;
     END $$;
   `);
+
+  return stmts;
+}
+
+/**
+ * Policies, grants and invariants — everything with no secret in it.
+ *
+ * Emitted into a committed migration by `npm run db:generate:rls`, so tenant
+ * isolation arrives as reviewable SQL alongside the schema change that needs
+ * it, rather than as a side effect of a script someone remembers to run.
+ * ADR-002 asks for exactly this.
+ *
+ * Every statement is idempotent (DROP POLICY IF EXISTS, CREATE OR REPLACE,
+ * CREATE INDEX IF NOT EXISTS), so re-applying is safe and the runtime
+ * `db:rls` path still works unchanged for a laptop.
+ */
+export function buildPolicyStatements(appRole = "nexus_app"): string[] {
+  const stmts: string[] = [];
 
   for (const table of TENANT_SCOPED_TABLES) {
     const policy = `${table}_tenant_isolation`;
@@ -257,3 +284,14 @@ export const VERIFY_RLS_SQL = `
        OR NOT EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid)
      );
 `;
+
+/**
+ * Everything, in order. Used by the runtime `db:rls` path, which still exists
+ * for local development and for creating the role on a fresh database.
+ */
+export function buildRlsStatements(
+  appRole = "nexus_app",
+  appPassword = appRole,
+): string[] {
+  return [...buildRoleStatements(appRole, appPassword), ...buildPolicyStatements(appRole)];
+}

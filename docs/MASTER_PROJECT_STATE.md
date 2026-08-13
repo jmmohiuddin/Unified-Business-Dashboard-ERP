@@ -72,8 +72,8 @@ project with a statutory deadline.
 | `/health` + post-deploy smoke | ✅ `995ac82`, smoke wired to CI |
 | Confirmation on irreversible writes | ✅ `eb3d0e2` |
 | Error reporting with redaction | ✅ `reportError` at 8 sites, 13 unit tests. A vendor SDK is one `setErrorSink` call away; the redaction runs first either way, so an Emirates ID or connection string never reaches it |
-| **Staging environment** | ⬜ **not done** — migrations are reviewable and drift-gated, but nothing proves them on a copy before production |
-| **RLS generated INTO migrations** | ⬜ **not done** — `db:rls` still runs as a separate idempotent step after migrate. The build gate still fails if any tenant table lacks a policy, so isolation is not weakened |
+| **Staging environment** | ⬜ **not done, and it is the largest remaining operational gap.** Migrations are reviewable and drift-gated, and CI applies them to a throwaway Postgres on every PR — but nothing proves them against a copy of PRODUCTION data before they touch it. Vercel preview deployments share the production database, so they are not staging. Needs a second Neon branch plus a preview-scoped `APP_DATABASE_URL`; the plan and the cost are the owner's call |
+| RLS generated INTO migrations | ✅ `9999_rls_policies.sql`, 461 statements, applied by `db:migrate` and drift-gated by `check:rls`. Role creation stays a runtime step because it carries a password and a migration is committed to a public repo |
 | Offsite backup replication | ⬜ blocked on Q-8 |
 
 ### Verification surface

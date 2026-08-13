@@ -15,7 +15,8 @@
     "rls": "tsx src/apply-rls.ts",
     "seed": "tsx src/seed/index.ts",
     "typecheck": "tsc --noEmit",
-    "migrate": "drizzle-kit migrate"
+    "migrate": "drizzle-kit migrate",
+    "generate:rls": "tsx src/generate-rls-migration.ts"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
