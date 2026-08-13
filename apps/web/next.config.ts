@@ -25,12 +25,29 @@ const config: NextConfig = {
   // there is no build step between editing a metric and seeing it on screen.
   transpilePackages: ["@nexus/db", "@nexus/core"],
   serverExternalPackages: ["postgres"],
-  env: {
-    DATABASE_URL: process.env.DATABASE_URL!,
-    APP_DATABASE_URL: process.env.APP_DATABASE_URL!,
-    NEXUS_DEMO_TODAY: process.env.NEXUS_DEMO_TODAY ?? "",
-    NEXUS_DEMO_MODE: process.env.NEXUS_DEMO_MODE ?? "",
-  },
+  /**
+   * There is deliberately no `env:` block.
+   *
+   * Next's `env` key does not pass variables through — it INLINES them into the
+   * bundle as string literals at build time. That had two consequences, one of
+   * which reached production:
+   *
+   *   1. NEXUS_DEMO_MODE was baked in at build time while the boot gate checks
+   *      it at runtime, so the two could disagree — and did. The deployed
+   *      sign-in page rendered working credentials for every seeded account
+   *      while `assertConfiguration`, reading the real runtime environment, saw
+   *      the flag unset and reported the configuration healthy. A security gate
+   *      that inspects a different value from the code it is guarding cannot
+   *      guard it.
+   *
+   *   2. DATABASE_URL and APP_DATABASE_URL were inlined too. Nothing referenced
+   *      them from a client component, so no credential actually shipped — but
+   *      the moment one did, the connection string would have gone into the
+   *      browser bundle with no warning.
+   *
+   * Server components and route handlers read `process.env` directly at runtime
+   * on the server, so none of this was buying anything.
+   */
   logging: { fetches: { fullUrl: false } },
 };
 

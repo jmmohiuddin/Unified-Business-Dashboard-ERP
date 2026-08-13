@@ -27,6 +27,15 @@ export const maxDuration = 300;
  * partial unique index on (job) WHERE finished_at IS NULL, so a second
  * invocation that overlaps the first simply fails to insert and exits. No
  * Redis, no lease renewal, no split brain.
+ *
+ * SCHEDULE CONSTRAINT. Vercel's Hobby plan permits daily crons only — an
+ * hourly outbox schedule made the whole DEPLOY fail, not just the cron. All
+ * four therefore run once a day, staggered. That is fine today because no
+ * delivery provider is connected and the outbox has nothing to send; the moment
+ * one is, daily is too slow for a "your cheque bounced" message and this needs
+ * either the Pro plan or an external trigger hitting the same endpoint. The
+ * endpoints are plain authenticated HTTP, so any scheduler can drive them —
+ * nothing here is coupled to Vercel Cron.
  */
 
 const JOBS = ["automation", "outbox", "briefing", "snapshots"] as const;
