@@ -5,6 +5,7 @@ import { headers } from "next/headers";
 import { withTenant } from "@nexus/db";
 import {
   ServiceError,
+  reportError,
   adjustStock,
   bookAppointment,
   completeJob,
@@ -94,9 +95,10 @@ function toResult(err: unknown): ActionResult {
   if (err instanceof Error && err.name === "ZodError") {
     return { ok: false, message: "Some of those values are not valid." };
   }
-  // Anything unexpected is logged server-side and generalised for the user —
-  // a raw database error rendered in the UI is an information leak.
-  console.error("[action]", err);
+  // Anything unexpected is reported server-side and generalised for the user —
+  // a raw database error rendered in the UI is an information leak, and an
+  // unreported one is invisible.
+  reportError(err, "server-action");
   return { ok: false, message: "Something went wrong. Nothing was saved." };
 }
 

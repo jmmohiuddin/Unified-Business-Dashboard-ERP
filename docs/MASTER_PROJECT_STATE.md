@@ -71,7 +71,7 @@ project with a statutory deadline.
 | Scheduler with run log and job lock | ✅ `995ac82` |
 | `/health` + post-deploy smoke | ✅ `995ac82`, smoke wired to CI |
 | Confirmation on irreversible writes | ✅ `eb3d0e2` |
-| **Sentry / error tracking** | ⬜ **not done** — `/health` and the smoke test cover liveness; there is still no exception aggregation, so a handled-but-wrong 500 in production is invisible |
+| Error reporting with redaction | ✅ `reportError` at 8 sites, 13 unit tests. A vendor SDK is one `setErrorSink` call away; the redaction runs first either way, so an Emirates ID or connection string never reaches it |
 | **Staging environment** | ⬜ **not done** — migrations are reviewable and drift-gated, but nothing proves them on a copy before production |
 | **RLS generated INTO migrations** | ⬜ **not done** — `db:rls` still runs as a separate idempotent step after migrate. The build gate still fails if any tenant table lacks a policy, so isolation is not weakened |
 | Offsite backup replication | ⬜ blocked on Q-8 |
@@ -80,13 +80,13 @@ project with a statutory deadline.
 
 | Suite | Count | Runs against |
 |---|---|---|
-| **Unit (Vitest)** | **38** | nothing — no DB, no server |
+| **Unit (Vitest)** | **51** | nothing — no DB, no server |
 | Metric snapshots | 26 | seeded DB |
 | Write layer | 41 | seeded DB |
 | End-to-end | 98 | running server |
 | Security regression | 68 | running server |
 | Smoke | 10 | running server |
-| **Total** | **281** | |
+| **Total** | **294** | |
 
 Plus five static guards that need neither: money (float arithmetic on money
 paths), routes (every drill-down resolves), migrations (schema drift), docs

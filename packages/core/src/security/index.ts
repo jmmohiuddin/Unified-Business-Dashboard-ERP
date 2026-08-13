@@ -9,3 +9,4 @@ export * from "./pii.ts";
 export * from "./config.ts";
 export * from "./events.ts";
 export * from "./erasure.ts";
+export * from "./reporting.ts";

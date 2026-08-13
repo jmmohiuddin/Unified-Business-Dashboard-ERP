@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { withTenant } from "@nexus/db";
-import { MetricError, runMetric, type MetricContext } from "@nexus/core";
+import { MetricError, runMetric, type MetricContext , reportError } from "@nexus/core";
 import { authenticateApiToken } from "@/lib/api-auth";
 import { resolveToday } from "@/lib/data";
 import { rateLimit } from "@/lib/rate-limit";
@@ -72,7 +72,7 @@ export async function GET(
       return Response.json({ error: err.code, message: err.message }, { status });
     }
     // Never leak an internal error to an API client.
-    console.error("[api/metrics]", err);
+    reportError(err, "api/v1/metrics");
     return Response.json({ error: "internal" }, { status: 500 });
   }
 }

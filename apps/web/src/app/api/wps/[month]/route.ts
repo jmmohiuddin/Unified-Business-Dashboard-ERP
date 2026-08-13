@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
-import { Money, can, generateSif, tryDecryptPii, type WpsEmployee } from "@nexus/core";
+import { Money, can, generateSif, reportError, tryDecryptPii, type WpsEmployee } from "@nexus/core";
 import { getSession } from "@/lib/session";
 import { rateLimit } from "@/lib/rate-limit";
 
@@ -26,7 +26,7 @@ export async function GET(
     // This endpoint decrypts IBANs. An unhandled throw here would surface a
     // framework stack trace, and stack traces from this code path can carry
     // query fragments and column names. Log server-side, return nothing useful.
-    console.error("[api/wps]", err);
+    reportError(err, "api/wps");
     return new Response("Could not generate the file", { status: 500 });
   }
 }

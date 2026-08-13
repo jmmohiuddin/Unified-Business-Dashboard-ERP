@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { sql } from "drizzle-orm";
 import { adminDb, withTenant, withoutTenant } from "@nexus/db";
+import { reportError } from "@nexus/core";
 
 export const dynamic = "force-dynamic";
 // Snapshots sweep every metric for every business unit; give them room.
@@ -103,7 +104,7 @@ export async function GET(
          WHERE id = ${runId}::uuid
       `),
     );
-    console.error(`[cron/${job}]`, err);
+    reportError(err, `cron/${job}`);
     // The run is recorded as failed either way; /health reports staleness.
     return Response.json({ status: "failed", job }, { status: 500 });
   }
