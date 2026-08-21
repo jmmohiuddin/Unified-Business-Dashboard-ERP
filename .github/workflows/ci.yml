@@ -34,6 +34,12 @@ jobs:
       AUTH_SECRET: ci-only-signing-value-long-enough-for-validation-0123456789abcdef
       PII_ENCRYPTION_KEYS: '{"1":"Y2ktb25seS10ZXN0LWtleS0zMi1ieXRlcy1sb25nISE="}'
       PII_ACTIVE_KEY_ID: "1"
+      # Must be set explicitly, and must be 32 bytes. Deriving it from the
+      # active encryption key would mean the next rotation silently invalidated
+      # every blind index, including the unique Emirates ID one — so pii.ts
+      # refuses to guess. Without this line the seed falls back to the
+      # placeholder in .env.example and fails on its length.
+      PII_INDEX_KEY: "Ci9tNuqCeViGun1lrlOdQU4nzmphXEMm+CNNfjPba94="
       BACKUP_ENCRYPTION_KEY: ci-only-backup-key
       NEXUS_DEMO_TODAY: "2026-08-06"
       # `next start` runs in production mode, and the boot gate requires an

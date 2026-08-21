@@ -109,6 +109,17 @@ function highestKeyId(ids: string[]): string {
  */
 function resolveIndexKey(env: NodeJS.ProcessEnv, isProduction: boolean): Buffer {
   if (env.PII_INDEX_KEY) {
+    // `.env.example` is loaded as a fallback by the CLIs, so its unsubstituted
+    // placeholders arrive here as real values. Say that plainly rather than
+    // reporting a byte count: "<run npm run keygen>" decodes to 11 bytes, and
+    // "got 11" sends the reader looking for a truncated key that does not exist.
+    if (/^<.*>$/.test(env.PII_INDEX_KEY.trim())) {
+      throw new Error(
+        `PII_INDEX_KEY is still the placeholder ${env.PII_INDEX_KEY.trim()} from .env.example.\n` +
+          "  Generate a real one and put it in .env:\n" +
+          "      npm run keygen",
+      );
+    }
     const buf = Buffer.from(env.PII_INDEX_KEY, "base64");
     if (buf.length !== 32) {
       throw new Error(`PII_INDEX_KEY must be exactly 32 bytes of base64 (got ${buf.length}).`);
