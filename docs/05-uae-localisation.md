@@ -96,12 +96,45 @@ package precisely to contain the liability — a lever the owner can only manage
 the split is visible.
 
 Under the 2021 law the old reductions for resignation were removed: someone who
-resigns after a year gets the same accrual as someone terminated. Forfeiture
-survives only for Article 44 gross misconduct.
+resigns after a year gets the same accrual as someone terminated.
+
+**Service is counted in calendar anniversaries, not elapsed days ÷ 365.** The
+divisor looks equivalent and is not: any period containing a leap day holds more
+than 365n days, so it reports an anniversary as passed before it is and starts
+paying the 30-day rate early. Five years to the day from 2019-01-01 is AED
+34,520.55 on a 10,000 basic; the divisor made it AED 34,547.57. The gap is small
+— about AED 135 by year twenty — but it is systematic, it hits every employee
+crossing five years, and it is the difference between a register the owner can
+check on paper and one they cannot. A part-completed year is pro-rated over its
+own length, 365 or 366 days, so the fraction reaches a full year exactly on the
+anniversary and never before it. The 365 that remains is the daily-wage divisor
+(monthly basic × 12 ÷ 365), which is the MOHRE and court convention and is a
+different thing entirely.
+
+**Gross misconduct is an assumption, not a settled position — open question
+Q-2b.** `calculateGratuity` forfeits the whole entitlement for a dismissal under
+Article 44, and that is what the register shows the owner. Forfeiture was
+unambiguously the rule under Articles 120 and 139 of Federal Law 8 of 1980,
+which Decree-Law 33/2021 superseded. Article 44 of the new law permits summary
+dismissal without notice, but on the reading we have — unconfirmed — it does not
+extinguish the Article 51 benefit. It is worth AED 83,835.62 on a ten-year
+employee at a 10,000 basic. The code behaviour is unchanged pending advice; what
+changed is that the assumption is now marked in the module, on the page, and as
+an `it.todo` in `uae.test.ts` instead of a passing test.
+
+Open questions on this module, both for the same adviser:
+
+| Q | Question | Owner | Blocks |
+|---|---|---|---|
+| **Q-2** | Resignation versus termination gratuity under the 2022 law | MOHRE / employment lawyer | Gratuity fixtures |
+| **Q-2b** | Whether an Article 44 gross-misconduct dismissal still forfeits gratuity | MOHRE / employment lawyer | Gratuity fixtures; any misconduct settlement |
 
 For this group the accrued liability is **AED 160,353** across 14 staff — money
 already owed, on a balance sheet that would otherwise show none of it. It is
-accrued monthly as a *delta*, so re-running the job is idempotent.
+accrued monthly as a *delta*, so re-running the job is idempotent. (Recomputed
+on the current seed, the anniversary arithmetic puts the group AED 120 lower
+than the old divisor did — every employee's figure moves down or stays put,
+never up. The exact total moves with the date the demo is seeded.)
 
 ```
 ✓ gratuity provision ties to per-employee accruals   employees AED 160,353 vs ledger AED 160,353
