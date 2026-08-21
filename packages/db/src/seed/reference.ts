@@ -17,6 +17,8 @@
  *    someone resigns.
  *  • Irrecoverable input VAT — residential rent is exempt, so VAT on the costs
  *    of those flats is an expense, not a reclaim.
+ *  • Residual input VAT — and a cost serving both is neither, until the return
+ *    apportions it. Three accounts, because two force a wrong answer.
  *  • Corporate tax provision — 9% above AED 375,000 since June 2023.
  */
 
@@ -46,9 +48,32 @@ export const CHART_OF_ACCOUNTS: AccountSeed[] = [
   { code: "1400", name: "Staff Advances", type: "asset", systemKey: "STAFF_ADVANCE", cashFlowSection: "operating" },
   /** Refundable deposits are everywhere in the UAE: DEWA, landlord, Ejari. */
   { code: "1410", name: "Refundable Deposits Paid (DEWA / Landlord)", type: "asset", systemKey: "DEPOSITS_PAID", cashFlowSection: "operating" },
+  /**
+   * The mirror of 2500 Customer Advances. Money paid to a supplier ahead of any
+   * bill is an ASSET — the supplier owes goods or a refund — not a reduction of
+   * payables against bills that do not exist. Without this account `payBill`
+   * could only ever pay exactly what was already billed, so paying a deposit to
+   * hold stock was unrecordable and the journal did not balance.
+   */
+  { code: "1420", name: "Supplier Advances (prepayments)", type: "asset", systemKey: "SUPPLIER_ADVANCE", cashFlowSection: "operating" },
   { code: "1500", name: "Property & Equipment", type: "asset", systemKey: "PPE", cashFlowSection: "investing" },
   { code: "1510", name: "Accumulated Depreciation", type: "asset", systemKey: "ACCUM_DEP", cashFlowSection: "investing" },
   { code: "1600", name: "Recoverable Input VAT", type: "asset", systemKey: "VAT_INPUT", cashFlowSection: "operating" },
+  /**
+   * Input VAT on SHARED overheads — costs that serve taxable and exempt supplies
+   * together, so no amount of them is attributable to either until the return is
+   * prepared. It is held here rather than in 1600 because 1600 means "we will
+   * reclaim this"; a residual pool is only *partly* reclaimable, at a ratio that
+   * is not known until the quarter's supply mix is.
+   *
+   * Splitting it out is what makes `calculateVatReturn`'s apportionment reachable
+   * at all: with only 1600 and 5720 in the chart every cost had to be declared
+   * wholly recoverable or wholly not, so 100% of a mixed business's overhead VAT
+   * was reclaimed — the exact FTA assessment position this localisation exists
+   * to prevent. The VAT return reads this balance as `residualInput` and splits
+   * it; the split itself is never posted back here.
+   */
+  { code: "1610", name: "Residual Input VAT (pending apportionment)", type: "asset", systemKey: "VAT_INPUT_RESIDUAL", cashFlowSection: "operating" },
   { code: "1700", name: "Due from Group Companies", type: "asset", systemKey: "INTERCO_DUE_FROM", cashFlowSection: "operating" },
 
   // ── Liabilities ───────────────────────────────────────────────────────────
@@ -111,6 +136,16 @@ export const CHART_OF_ACCOUNTS: AccountSeed[] = [
   { code: "5800", name: "Bank & Payment Charges", type: "expense", systemKey: "BANK_CHARGES" },
   /** Bounced-cheque charges are a recurring, avoidable cost worth isolating. */
   { code: "5810", name: "Returned Cheque Charges", type: "expense", systemKey: "CHEQUE_CHARGES" },
+  /**
+   * Till variance. A cash drawer counted at close almost never equals the cash
+   * the system expected, and the difference has to land somewhere: without this
+   * account the only options are to force the count (destroying the evidence) or
+   * to leave the session's variance unposted, which is what happens today —
+   * `cash_register_sessions` records a variance that never reaches the ledger,
+   * so the cash account disagrees with the drawer and nothing says by how much.
+   * Debit when the drawer is short, credit when it is over.
+   */
+  { code: "5820", name: "Cash Over / Short", type: "expense", systemKey: "CASH_OVER_SHORT" },
   { code: "5900", name: "Depreciation", type: "expense", systemKey: "DEPRECIATION" },
   { code: "5950", name: "Bad Debt Written Off", type: "expense", systemKey: "BAD_DEBT" },
 
@@ -151,6 +186,21 @@ export const UAE_TAX_CODES: TaxCodeSeed[] = [
     inputRecoverable: true,
     // Retail here quotes VAT-inclusive prices; B2B quotes exclusive. Inclusive
     // is the safer default because a shelf price is what the customer pays.
+    isInclusive: true,
+    reportingCode: "VAT201-Box1",
+  },
+  {
+    code: "PARKING",
+    name: "VAT 5% — standalone parking (standard rated)",
+    rate: "0.050000",
+    // Standalone parking is standard-rated even though it is let by a business
+    // whose other lettings are exempt. It exists as its own code so that a cost
+    // serving parking can be attributed to a STANDARD supply on a bill raised
+    // against a rental business unit — the case that was previously denied
+    // recovery purely because the unit's `kind` said "rental".
+    treatment: "standard",
+    inputRecoverable: true,
+    // A barrier ticket price is what the driver pays, like a shelf price.
     isInclusive: true,
     reportingCode: "VAT201-Box1",
   },
