@@ -182,6 +182,30 @@ export const receiveBillInput = z.object({
          * unit actually supplies — see `deriveAttributionFromSupplyMix`.
          */
         servesTaxCode: z.string().min(1).max(30).optional(),
+        /**
+         * The treatment of THIS PURCHASE — the code the supplier billed under,
+         * or `RCM` for an imported service the buyer self-accounts for.
+         *
+         * Deliberately separate from `servesTaxCode` above, because the two
+         * answer different questions and conflating them puts a wrong value in
+         * a column somebody later files a return from. `servesTaxCode` is about
+         * ATTRIBUTION — which of our supplies this cost serves, which decides
+         * recoverability. This is about the SUPPLY WE RECEIVED — what the
+         * transaction itself is, which decides whether output VAT has to be
+         * raised on it at all.
+         *
+         * A consultancy invoice from a London firm serving our standard-rated
+         * parking business is `taxCode: "RCM"` and `servesTaxCode: "PARKING"`:
+         * reverse-charge on the purchase, fully recoverable on the attribution.
+         * One field could not carry both without lying about one of them.
+         *
+         * This is what lands on `document_lines.tax_code_id`, matching what
+         * createInvoice already writes on the sales side, where the column
+         * likewise means "the treatment of this line's supply". Without it no
+         * bill can be recognised as an imported service, and VAT201 box 3
+         * reads nil no matter how many are posted.
+         */
+        taxCode: z.string().min(1).max(30).optional(),
         description: z.string().max(500).optional(),
         /** Receive into this warehouse. Defaults to the business's main store. */
         warehouseId: z.uuid().nullable().optional(),
@@ -283,6 +307,40 @@ async function resolveDeclaredAttributions(
 }
 
 /**
+ * Resolve the purchase's OWN tax codes to ids, for `document_lines.tax_code_id`.
+ *
+ * Separate from `resolveDeclaredAttributions`, which maps a code to a
+ * recoverability verdict and never needs the row's identity. Here the id is the
+ * whole point: it is what makes a posted bill line recognisable later as an
+ * imported service, and what the VAT return joins against to fill box 3.
+ *
+ * Unknown codes are refused rather than dropped to NULL. A silently-NULLed tax
+ * code on a bill is indistinguishable from one that was never declared, and the
+ * difference between those two is a reverse-charge liability the FTA expects to
+ * see and would not find.
+ */
+async function resolveTaxCodeIds(
+  ctx: ServiceContext,
+  codes: string[],
+): Promise<Map<string, string>> {
+  const resolved = new Map<string, string>();
+  if (codes.length === 0) return resolved;
+
+  const rows = await ctx.tx.execute<{ id: string; code: string }>(sql`
+    SELECT id, code FROM tax_codes
+     WHERE is_active = true
+       AND code = ANY(ARRAY[${sql.join(codes.map((c) => sql`${c}`), sql`, `)}])
+  `);
+  for (const row of rows) resolved.set(row.code, row.id);
+  for (const code of codes) {
+    if (!resolved.has(code)) {
+      throw new ServiceError(`Tax code "${code}" is not configured.`, "invalid");
+    }
+  }
+  return resolved;
+}
+
+/**
  * Record a supplier bill and receive the goods.
  *
  * This is the mirror of createInvoice, and the symmetry is deliberate:
@@ -346,6 +404,10 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
       ctx,
       [...new Set(input.lines.map((l) => l.servesTaxCode).filter((c) => c !== undefined))],
     );
+    const taxCodeIds = await resolveTaxCodeIds(
+      ctx,
+      [...new Set(input.lines.map((l) => l.taxCode).filter((c) => c !== undefined))],
+    );
     // Only measured when something actually needs a default — the mix query
     // scans a year of the unit's revenue lines and a fully-declared bill has
     // nothing to apply it to.
@@ -398,11 +460,13 @@ export async function receiveBill(ctx: ServiceContext, raw: unknown) {
       await ctx.tx.execute(sql`
         INSERT INTO document_lines
           (id, tenant_id, document_id, line_no, item_id, description,
-           quantity, unit_price, tax_rate, tax_amount, line_total, unit_cost)
+           quantity, unit_price, tax_code_id, tax_rate, tax_amount, line_total, unit_cost)
         VALUES
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${doc.id}::uuid, ${lineNo},
            ${line.itemId}::uuid, ${line.description ?? ""}, ${M.toDb(M.money(line.quantity))},
-           ${M.toDb(M.money(line.unitCost))}, ${line.vatRate.toFixed(6)}, ${M.toDb(vat)},
+           ${M.toDb(M.money(line.unitCost))},
+           ${line.taxCode ? (taxCodeIds.get(line.taxCode) ?? null) : null}::uuid,
+           ${line.vatRate.toFixed(6)}, ${M.toDb(vat)},
            ${M.toDb(M.add(net, vat))}, ${M.toDb(M.money(line.unitCost))})
       `);
 
