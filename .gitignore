@@ -18,3 +18,7 @@ superpowers/
 
 # Browser-automation debris from local agent tooling.
 .playwright-mcp/
+
+# Incremental TypeScript build state — a machine-local artifact that changes
+# on every build and has blocked a branch checkout at least once.
+*.tsbuildinfo
