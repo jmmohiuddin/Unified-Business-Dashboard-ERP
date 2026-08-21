@@ -4,6 +4,7 @@ import { can } from "@nexus/core";
 import { destroySession, requireSession, revokeAllSessions } from "@/lib/session";
 import { loadBusinessUnits, loadNotifications } from "@/lib/data";
 import { BU_COLOR } from "@/components/ui";
+import { SearchBox } from "@/components/search-box";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,10 @@ const NAV: NavGroup[] = [
       // the money screens, not buried in settings.
       { href: "/cash", label: "Cash entry", icon: "⊕", permission: "payment:create" },
       { href: "/finance/cash", label: "Cash register", icon: "▣", permission: "settings:update" },
+      // FR-M05 / JTBD J2: what the owner has put in versus taken out. Drawings
+      // are not an expense, so they appear nowhere in P&L — without this screen
+      // the single largest movement of the owner's own money is invisible.
+      { href: "/finance/owner", label: "Owner ledger", icon: "◈", permission: "report:read" },
     ],
   },
   {
@@ -88,9 +93,16 @@ const NAV: NavGroup[] = [
       { href: "/settings/import", label: "Import data", icon: "▼", permission: "journal:post" },
     ],
   },
-  // AI assistant temporarily disabled — no ANTHROPIC_API_KEY provisioned yet.
-  // Re-enable by restoring this entry and removing the redirect in assistant/page.tsx.
-  // { href: "/assistant", label: "Ask Nexus", icon: "✦", permission: "ai:ask" },
+  {
+    label: null,
+    items: [
+      // Re-enabled per decision D2. The page no longer redirects: without
+      // ANTHROPIC_API_KEY it renders an honest "not configured" state rather
+      // than 500ing or bouncing the user back where they came from, which is
+      // what made the old dashboard CTA a dead end.
+      { href: "/assistant", label: "Ask Nexus", icon: "✦", permission: "ai:ask" },
+    ],
+  },
 ];
 
 /**
@@ -208,6 +220,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </div>
         </div>
 
+        {/* WF-05 §1.2 puts `find` in the shell on BOTH breakpoints. With 447
+            parties and 4,151 documents, guessing which list screen holds a
+            record and paging through it was the only way to reach anything. */}
+        {can(session.principal, "party:read") && (
+          <div className="px-2 pt-2">
+            <SearchBox variant="shell" />
+          </div>
+        )}
+
         <nav className="flex-1 overflow-y-auto py-3 px-2 scrollbar-none">
           {bell(false)}
           {groups.map((group) => (
@@ -296,6 +317,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <p className="text-xs font-semibold truncate">{session.tenantName}</p>
         </div>
         <div className="flex items-center gap-3">
+          {can(session.principal, "party:read") && (
+            <Link href="/search" className="text-lg" aria-label="Search">
+              <span aria-hidden>⌕</span>
+            </Link>
+          )}
           <Link href="/inbox" className="relative text-lg" aria-label={`${unread} unread notifications`}>
             <span aria-hidden>◔</span>
             {unread > 0 && (
