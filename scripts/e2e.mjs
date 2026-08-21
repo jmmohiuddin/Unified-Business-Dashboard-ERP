@@ -501,13 +501,21 @@ async function main() {
   check("CRM shows cross-business relationships", /Across 2\+ businesses/.test(crmPage));
 
   // The AI assistant is temporarily disabled (no ANTHROPIC_API_KEY provisioned).
-  // Assert the disable is clean — a redirect to the dashboard, not a broken page
-  // or a half-rendered feature. Restore the content checks when it is re-enabled.
+  // The assistant is re-enabled (decision D2) and no longer redirects. What is
+  // asserted now is the UNCONFIGURED path, because that is the one this
+  // environment can actually reach: with no ANTHROPIC_API_KEY it must render a
+  // real page that says so. The previous behaviour — bouncing the user back to
+  // the dashboard they clicked from — is the specific dead end that made the
+  // home screen's primary CTA a no-op, so a redirect here is now a FAILURE.
   const asst = await get("/assistant", owner.jar);
   check(
-    "disabled assistant redirects to the dashboard",
-    [302, 307, 308].includes(asst.status) && (asst.location ?? "").endsWith("/"),
-    `status ${asst.status} → ${asst.location}`,
+    "assistant renders rather than bouncing the user back",
+    asst.status === 200,
+    `status ${asst.status}${asst.location ? ` → ${asst.location}` : ""}`,
+  );
+  check(
+    "unconfigured assistant says so instead of failing",
+    /ANTHROPIC_API_KEY/i.test(asst.html),
   );
 
   const purchases = (await get("/purchases", owner.jar)).html;

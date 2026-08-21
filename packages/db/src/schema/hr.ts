@@ -92,6 +92,29 @@ export const employees = pgTable(
     gratuityAccrued: money("gratuity_accrued").notNull().default("0"),
     gratuityAsOf: date("gratuity_as_of"),
 
+    /**
+     * The date a NEW period of continuous service began, after an earlier one
+     * was settled and paid out. Null for everyone who has never been settled,
+     * which is almost everyone.
+     *
+     * This exists so `joinedOn` never has to be rewritten. Edge case EC-05:
+     * an employee is paid AED 84,000 of end-of-service benefit, leaves, and is
+     * hired back six months later. Their service clock must restart — the first
+     * period has been bought and paid for — but their joining date is evidence.
+     * It is on the labour contract, on the visa file, in the MOHRE record and in
+     * every earlier settlement; moving it to make the arithmetic come out would
+     * destroy the only proof that the first period ever happened, and would make
+     * the payout that discharged it unreconcilable.
+     *
+     * So the original dates stay and the clock is DERIVED. Nothing reads this
+     * column directly: `resolveGratuityServiceStart` in
+     * `packages/core/src/services/gratuity-payout.ts` combines it with the
+     * settled periods in `gratuity_settlements` and takes the later of the two,
+     * so a day of service that has already been paid for can never be paid for
+     * again — even if this column is wrong, missing, or set by hand.
+     */
+    serviceRestartedOn: date("service_restarted_on"),
+
     /** WPS (Wage Protection System) — salaries must be paid through an approved
      *  agent and reported to MOHRE, or the establishment is blocked from issuing
      *  new work permits. These fields are what the SIF export needs.
@@ -379,6 +402,135 @@ export const salaryAdvances = pgTable(
     ...timestamps,
   },
   (t) => [index("salary_advances_emp_idx").on(t.employeeId)],
+);
+
+/**
+ * END-OF-SERVICE SETTLEMENTS — the row that discharges the gratuity liability.
+ *
+ * `employees.gratuity_accrued` and the GRATUITY_PROVISION account have been
+ * accumulating since the first migration, and until this table nothing in the
+ * product could ever take money back out of them. An employee owed AED 84,000
+ * was paid outside the system and the liability sat on the balance sheet
+ * forever. One row here is the payment: what was calculated, on which rules, on
+ * which dates, how much of it came out of the provision that was already
+ * carried and how much hit this month's profit, and which journal moved it.
+ *
+ * Three things make this a record rather than a receipt.
+ *
+ *  1. IT IS A SNAPSHOT, NOT A POINTER. Basic salary, total package, joining
+ *     date, service days, daily wage, day counts and the engine's own
+ *     plain-language explanation are all copied in at settlement time. An
+ *     employee's salary changes; a settlement figure computed from today's
+ *     salary two years after they left is not the figure that was paid, and a
+ *     register that cannot reproduce the number it paid is worth nothing in a
+ *     MOHRE dispute.
+ *
+ *  2. IT BOUNDS A PERIOD OF SERVICE. `service_period_start` and
+ *     `service_period_end` say exactly which days were bought. That is what
+ *     makes edge case EC-05 — rehire after a payout — safe: the service clock
+ *     for any later period starts after the last settled day, so no day can be
+ *     paid for twice, and it is derived from these columns rather than from a
+ *     joining date somebody remembered to edit. See
+ *     `employees.service_restarted_on`.
+ *
+ *  3. IT RECORDS WHICH LEGAL READING WAS APPLIED. `reason` is stored as given,
+ *     not collapsed to an amount, and `forfeiture_assumed` marks the one case
+ *     where the figure rests on an unconfirmed position — open question Q-2b,
+ *     whether an Article 44 gross-misconduct dismissal still forfeits the
+ *     Article 51 benefit. If the answer comes back the other way, this column
+ *     is how you find the settlements that have to be revisited. Without it the
+ *     zeros are indistinguishable from employees who were simply under a year.
+ *
+ * Rows are never deleted and `employee_id` is `restrict` for the same reason:
+ * this is the evidence that a statutory payment was made.
+ */
+export const gratuitySettlements = pgTable(
+  "gratuity_settlements",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    employeeId: uuid("employee_id")
+      .notNull()
+      .references(() => employees.id, { onDelete: "restrict" }),
+    businessUnitId: uuid("business_unit_id")
+      .notNull()
+      .references(() => businessUnits.id, { onDelete: "restrict" }),
+
+    /** Human-facing reference, from the `gratuity_settlement` number series. */
+    settlementNumber: varchar("settlement_number", { length: 40 }).notNull(),
+    /** resignation · termination · gross_misconduct — passed to the engine as given. */
+    reason: varchar("reason", { length: 30 }).notNull(),
+
+    lastWorkingDay: date("last_working_day").notNull(),
+    /** Posting date of the journal. Usually the last working day. */
+    settledOn: date("settled_on").notNull(),
+
+    /** Snapshots — see (1) above. `joined_on` is copied, never followed. */
+    joinedOn: date("joined_on").notNull(),
+    servicePeriodStart: date("service_period_start").notNull(),
+    servicePeriodEnd: date("service_period_end").notNull(),
+    unpaidLeaveDays: integer("unpaid_leave_days").notNull().default(0),
+    basicSalary: money("basic_salary").notNull(),
+    totalSalary: money("total_salary").notNull(),
+
+    serviceDays: integer("service_days").notNull(),
+    serviceYears: qty("service_years").notNull(),
+    dailyBasicWage: money("daily_basic_wage").notNull(),
+    /** Days of wage earned — the 21/30 band arithmetic, before the cap. */
+    gratuityDays: qty("gratuity_days").notNull(),
+
+    gratuityGross: money("gratuity_gross").notNull(),
+    /** The two-year total-wage ceiling, when it actually bit. Null otherwise. */
+    gratuityCap: money("gratuity_cap"),
+    gratuityAmount: money("gratuity_amount").notNull(),
+
+    /**
+     * The three-way split that keeps the payout off the P&L except where it
+     * belongs. `provision_applied` is what was already carried for this person
+     * and is released in full; the difference against the entitlement is either
+     * a shortfall (an expense this month, because the accrual under-provided) or
+     * an excess (a credit, because it over-provided). Exactly one of the last
+     * two is non-zero.
+     */
+    provisionApplied: money("provision_applied").notNull().default("0"),
+    expenseShortfall: money("expense_shortfall").notNull().default("0"),
+    provisionReleased: money("provision_released").notNull().default("0"),
+
+    /** Everything else owed on the last day. Entered, not derived — nothing in
+     *  the product accrues leave or notice yet. */
+    unpaidSalary: money("unpaid_salary").notNull().default("0"),
+    leaveEncashment: money("leave_encashment").notNull().default("0"),
+    noticePay: money("notice_pay").notNull().default("0"),
+    otherEarnings: money("other_earnings").notNull().default("0"),
+    /** Outstanding salary advances cleared against the settlement. */
+    advanceRecovered: money("advance_recovered").notNull().default("0"),
+
+    netPayable: money("net_payable").notNull(),
+    /** bank_transfer · wps · cash · payable (settle later through the bank run) */
+    settledVia: varchar("settled_via", { length: 20 }).notNull().default("bank_transfer"),
+
+    /** True when the amount rests on the unconfirmed Q-2b forfeiture reading. */
+    forfeitureAssumed: boolean("forfeiture_assumed").notNull().default(false),
+    /** The engine's own sentence, stored verbatim so the row explains itself. */
+    explanation: text("explanation").notNull(),
+    /** Full input and result snapshot — the reprint contract `payslips` uses. */
+    breakdown: metadata("breakdown"),
+
+    journalId: uuid("journal_id"),
+    settledByUserId: uuid("settled_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("gratuity_settlements_number_uq").on(t.tenantId, t.settlementNumber),
+    // The lookup that resolves the service clock: latest settled day per
+    // employee. Descending because it is always the most recent one that
+    // matters.
+    index("gratuity_settlements_emp_idx").on(t.employeeId, t.servicePeriodEnd),
+  ],
 );
 
 export const employeesRelations = relations(employees, ({ one, many }) => ({

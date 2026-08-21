@@ -32,3 +32,11 @@ export * from "./interco.ts";
 export * from "./rentals.ts";
 export * from "./cash-sessions.ts";
 export * from "./import/index.ts";
+
+// Wave 3 — the last of the PRD gaps.
+export * from "./search.ts";
+export * from "./gratuity-payout.ts";
+
+// Wave 3 — FR-M05. A pure read over 3100/3200 that posts nothing; see the file
+// header for why it is shaped like `loadCashBoard` rather than like a service.
+export * from "./owner-ledger.ts";

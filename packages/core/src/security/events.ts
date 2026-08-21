@@ -23,6 +23,13 @@ export type SecurityEventKind =
   | "auth.logout"
   | "session.revoked"
   | "authz.denied"
+  // Every other kind here records something being refused, attempted or failing.
+  // Nothing recorded access being GRANTED — an invitation accepted, a role
+  // raised, a business-unit scope widened. That is the wrong asymmetry for an
+  // audit stream: the denials are noise an attacker generates freely, while the
+  // grant is the single event that changes who can move money, and it reached
+  // only the audit log where nothing watches it in real time.
+  | "access.granted"
   | "tenant.cross_access_attempt"
   | "pii.decrypted"
   | "pii.key_rotated"
@@ -162,6 +169,24 @@ export const security = {
     securityEvent({ ...d, kind: "authz.denied", severity: "warning" }),
   crossTenant: (d: Omit<SecurityEvent, "at" | "kind" | "severity">) =>
     securityEvent({ ...d, kind: "tenant.cross_access_attempt", severity: "critical" }),
+  /**
+   * Somebody was given access: an invitation redeemed, a role changed, a scope
+   * widened.
+   *
+   * Severity is the caller's to choose, and it is doing real work here rather
+   * than decorating the line. `access.granted` is deliberately NOT in ALERTABLE:
+   * routine grants are a normal Tuesday and paging on each one trains people to
+   * ignore the pager. But `securityEvent` alerts on `critical` regardless of the
+   * list, so a caller granting a money-moving role passes `critical` and it
+   * pages — without every receptionist invitation doing the same.
+   *
+   * Callers: pass the role and the scope in `detail`. "Access was granted" with
+   * no answer to "to what?" is not an audit record.
+   */
+  accessGranted: (
+    d: Omit<SecurityEvent, "at" | "kind" | "severity"> & { severity?: Severity },
+  ) =>
+    securityEvent({ ...d, kind: "access.granted", severity: d.severity ?? "notice" }),
   piiDecrypted: (d: Omit<SecurityEvent, "at" | "kind" | "severity">) =>
     securityEvent({ ...d, kind: "pii.decrypted", severity: "notice" }),
   exported: (d: Omit<SecurityEvent, "at" | "kind" | "severity">) =>

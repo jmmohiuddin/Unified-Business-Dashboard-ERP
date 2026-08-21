@@ -13,6 +13,23 @@ import {
 import { security } from "../security/events.ts";
 
 /**
+ * Roles that can move money, and therefore whose granting is worth waking
+ * somebody for. Kept in step with MFA_REQUIRED_ROLES in apps/web/src/lib/mfa.ts
+ * — the same "can this account cause financial harm?" question decides both who
+ * must hold a second factor and whose appointment pages an operator.
+ *
+ * Deliberately a copy rather than an import: `packages/core` must not depend on
+ * `apps/web`, and inverting that dependency to share four strings would be the
+ * wrong trade. If the lists drift, the consequence is a missed page rather than
+ * a wrong grant, and the boundary stays clean.
+ */
+const MONEY_MOVING_ROLES = ["super_admin", "owner", "accountant", "general_manager"];
+
+/** Grants of a money-moving role page immediately; routine grants do not. */
+const grantSeverity = (roleKey: string) =>
+  MONEY_MOVING_ROLES.includes(roleKey) ? ("critical" as const) : ("notice" as const);
+
+/**
  * USER MANAGEMENT.
  *
  * There was none. A user could not be invited, re-roled or deactivated from
@@ -307,6 +324,20 @@ export async function changeRole(ctx: ServiceContext, raw: unknown) {
       entityTable: "memberships",
       entityId: input.membershipId,
       diff: { name: m.full_name, from: m.role_key, to: input.roleKey },
+    });
+    // The audit log records this for later. The event stream is what somebody
+    // can watch NOW — and a role being raised is the moment worth watching.
+    security.accessGranted({
+      tenantId: ctx.tenantId,
+      userId: ctx.principal.userId,
+      actorRole: ctx.principal.roleKey,
+      severity: grantSeverity(input.roleKey),
+      detail: {
+        via: "user.change_role",
+        membershipId: input.membershipId,
+        from: m.role_key,
+        to: input.roleKey,
+      },
     });
 
     return { membershipId: input.membershipId, roleKey: input.roleKey };
@@ -1092,6 +1123,20 @@ export async function acceptInvite(
       isPlatformAdmin: false,
     },
   };
+
+  security.accessGranted({
+    tenantId: auditCtx.tenantId,
+    userId: auditCtx.principal.userId,
+    actorRole: row.role_key,
+    severity: grantSeverity(row.role_key),
+    detail: {
+      via: "user.invite_accept",
+      role: row.role_key,
+      scope: row.scope,
+      businessUnitsGranted,
+      outcome,
+    },
+  });
 
   await writeAudit(auditCtx, {
     action: "user.invite_accept",

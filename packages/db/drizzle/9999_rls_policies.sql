@@ -403,6 +403,18 @@ CREATE POLICY employees_tenant_isolation ON "employees"
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "employees_tenant_rls_idx" ON "employees" (tenant_id);
 --> statement-breakpoint
+ALTER TABLE "exception_dismissals" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "exception_dismissals" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS exception_dismissals_tenant_isolation ON "exception_dismissals";
+--> statement-breakpoint
+CREATE POLICY exception_dismissals_tenant_isolation ON "exception_dismissals"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "exception_dismissals_tenant_rls_idx" ON "exception_dismissals" (tenant_id);
+--> statement-breakpoint
 ALTER TABLE "exchange_rates" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE "exchange_rates" FORCE ROW LEVEL SECURITY;
@@ -438,6 +450,18 @@ CREATE POLICY fulfilments_tenant_isolation ON "fulfilments"
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "fulfilments_tenant_rls_idx" ON "fulfilments" (tenant_id);
+--> statement-breakpoint
+ALTER TABLE "gratuity_settlements" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "gratuity_settlements" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS gratuity_settlements_tenant_isolation ON "gratuity_settlements";
+--> statement-breakpoint
+CREATE POLICY gratuity_settlements_tenant_isolation ON "gratuity_settlements"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "gratuity_settlements_tenant_rls_idx" ON "gratuity_settlements" (tenant_id);
 --> statement-breakpoint
 ALTER TABLE "idempotency_keys" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
