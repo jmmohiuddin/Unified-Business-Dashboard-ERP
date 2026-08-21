@@ -23,12 +23,18 @@ export const dynamic = "force-dynamic";
  *
  * The brief asked for ~30 widgets. Showing 30 widgets is the fastest way to
  * ensure none of them is read. This screen answers four questions in a fixed
- * order, because that is the order a business owner actually asks them:
+ * order, because that is the order a business owner actually needs them:
  *
- *   1. Am I making money?          → headline tiles
- *   2. Will I run out of cash?     → cash, receivables, forecast
- *   3. What needs me TODAY?        → the action list
+ *   1. What needs me TODAY?        → the action list
+ *   2. Am I making money?          → headline tiles
+ *   3. Will I run out of cash?     → cash, receivables, forecast
  *   4. Which business is winning?  → portfolio comparison
+ *
+ * The action list is first by deliberate inversion. The tiles used to lead,
+ * and a wall of tiles is where the eye lands first — so the one thing on the
+ * page that is actually actionable today was being read last, after the owner
+ * had already spent his attention on numbers he can do nothing about right
+ * now. Exceptions before summaries; the summaries are still one scroll away.
  *
  * Everything else from the brief exists — it lives one click away in the
  * relevant module, reachable from the tile it belongs to. Depth is preserved;
@@ -56,17 +62,27 @@ export default async function DashboardPage() {
             })}
           </p>
         </div>
-        <Link href="/assistant" className="btn btn-primary text-xs">
-          ✦ Ask about your business
-        </Link>
-      </header>
+        {/*
+          The "✦ Ask about your business" CTA used to sit here, styled as the
+          primary action and pointing at /assistant. That route has been a
+          redirect("/") for as long as no ANTHROPIC_API_KEY is provisioned, so
+          the largest button on the owner's home screen returned him to the
+          page he had just clicked from. An affordance that cannot do what it
+          promises is worse than none at all: it teaches the owner that the
+          controls on this screen do nothing.
 
-      <Suspense fallback={<GridSkeleton count={4} />}>
-        <HeadlineBand />
-      </Suspense>
+          Restore it in the same commit that re-enables the assistant — the
+          checklist is in (app)/assistant/page.tsx, alongside the commented-out
+          NAV entry in (app)/layout.tsx that this CTA was quietly bypassing.
+        */}
+      </header>
 
       <Suspense fallback={<div className="skeleton h-40 rounded-[var(--radius-lg)]" />}>
         <ActionBand />
+      </Suspense>
+
+      <Suspense fallback={<GridSkeleton count={4} />}>
+        <HeadlineBand />
       </Suspense>
 
       <Suspense fallback={<div className="skeleton h-64 rounded-[var(--radius-lg)]" />}>
@@ -510,7 +526,12 @@ async function PortfolioBand() {
   const staff = metric(m, "staff_performance");
   const ccy = session.baseCurrency;
   const rows = perf?.breakdown ?? [];
-  const max = Math.max(...rows.map((r) => r.value), 1);
+  // Magnitudes, not signed values. BarRow renders |value| / max, so a month in
+  // which every business lost money would collapse this denominator to the 1
+  // floor, blow every ratio past 100%, and let Math.min clamp all of them to
+  // full width — every business looking identically bad on the one screen whose
+  // job is telling them apart.
+  const max = Math.max(...rows.map((r) => Math.abs(r.value)), 1);
 
   const best = [...rows].sort((a, b) => Number(b.meta?.grossMargin ?? 0) - Number(a.meta?.grossMargin ?? 0))[0];
   const worst = [...rows]
@@ -556,7 +577,7 @@ async function PortfolioBand() {
               <p className="text-2xs text-muted mt-1 leading-relaxed">
                 {formatMoneyCompact(Number(best.meta?.grossMargin ?? 0), ccy)} gross margin on{" "}
                 {formatMoneyCompact(best.value, ccy)} revenue —{" "}
-                {((Number(best.meta?.marginRate ?? 0)) * 100).toFixed(0)}% of every taka kept.
+                {((Number(best.meta?.marginRate ?? 0)) * 100).toFixed(0)}% of every dirham kept.
               </p>
             </>
           ) : <p className="text-xs text-subtle mt-1">No data yet</p>}
@@ -579,7 +600,16 @@ async function PortfolioBand() {
         </Card>
 
         <Card>
-          <CardHeader title="Top staff" subtitle="Revenue attributed this month" href="/hr/performance" />
+          {/*
+            This pointed at /hr/performance, which has never existed — the
+            request fell through (app)/[...slug] to a real 404. Until an HR
+            performance screen is built, the drill-down goes where the
+            staff_performance metric itself already declares its drilldownHref
+            (packages/core/src/metrics/registry.ts): the gratuity register,
+            the one screen in the product that lists employees individually.
+            Keep the two in step if either moves.
+          */}
+          <CardHeader title="Top staff" subtitle="Revenue attributed this month" href="/hr/gratuity" />
           <div className="px-4 pb-3">
             {staff?.breakdown?.slice(0, 5).map((sRow) => (
               <div key={sRow.key} className="flex items-baseline justify-between gap-2 py-1">
@@ -692,7 +722,7 @@ async function OperationsBand() {
             {channels?.breakdown?.length ? (
               channels.breakdown.map((b) => (
                 <BarRow key={b.key} label={b.label} value={b.value}
-                  max={Math.max(...channels.breakdown!.map((x) => x.value), 1)}
+                  max={Math.max(...channels.breakdown!.map((x) => Math.abs(x.value)), 1)}
                   display={formatMoneyCompact(b.value, ccy)}
                   meta={`${String(b.meta?.orders ?? 0)} orders`} />
               ))
