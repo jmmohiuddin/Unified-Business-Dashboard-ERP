@@ -451,6 +451,30 @@ CREATE POLICY idempotency_keys_tenant_isolation ON "idempotency_keys"
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idempotency_keys_tenant_rls_idx" ON "idempotency_keys" (tenant_id);
 --> statement-breakpoint
+ALTER TABLE "import_batch_rows" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "import_batch_rows" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS import_batch_rows_tenant_isolation ON "import_batch_rows";
+--> statement-breakpoint
+CREATE POLICY import_batch_rows_tenant_isolation ON "import_batch_rows"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "import_batch_rows_tenant_rls_idx" ON "import_batch_rows" (tenant_id);
+--> statement-breakpoint
+ALTER TABLE "import_batches" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "import_batches" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS import_batches_tenant_isolation ON "import_batches";
+--> statement-breakpoint
+CREATE POLICY import_batches_tenant_isolation ON "import_batches"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "import_batches_tenant_rls_idx" ON "import_batches" (tenant_id);
+--> statement-breakpoint
 ALTER TABLE "installment_plans" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
 ALTER TABLE "installment_plans" FORCE ROW LEVEL SECURITY;
@@ -654,6 +678,18 @@ CREATE POLICY leave_requests_tenant_isolation ON "leave_requests"
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "leave_requests_tenant_rls_idx" ON "leave_requests" (tenant_id);
+--> statement-breakpoint
+ALTER TABLE "legal_entities" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "legal_entities" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS legal_entities_tenant_isolation ON "legal_entities";
+--> statement-breakpoint
+CREATE POLICY legal_entities_tenant_isolation ON "legal_entities"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "legal_entities_tenant_rls_idx" ON "legal_entities" (tenant_id);
 --> statement-breakpoint
 ALTER TABLE "locations" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint
@@ -1068,6 +1104,30 @@ CREATE POLICY units_tenant_isolation ON "units"
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "units_tenant_rls_idx" ON "units" (tenant_id);
+--> statement-breakpoint
+ALTER TABLE "user_invites" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "user_invites" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS user_invites_tenant_isolation ON "user_invites";
+--> statement-breakpoint
+CREATE POLICY user_invites_tenant_isolation ON "user_invites"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "user_invites_tenant_rls_idx" ON "user_invites" (tenant_id);
+--> statement-breakpoint
+ALTER TABLE "vat_returns" ENABLE ROW LEVEL SECURITY;
+--> statement-breakpoint
+ALTER TABLE "vat_returns" FORCE ROW LEVEL SECURITY;
+--> statement-breakpoint
+DROP POLICY IF EXISTS vat_returns_tenant_isolation ON "vat_returns";
+--> statement-breakpoint
+CREATE POLICY vat_returns_tenant_isolation ON "vat_returns"
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
+        WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "vat_returns_tenant_rls_idx" ON "vat_returns" (tenant_id);
 --> statement-breakpoint
 ALTER TABLE "warehouses" ENABLE ROW LEVEL SECURITY;
 --> statement-breakpoint

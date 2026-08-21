@@ -287,6 +287,16 @@ export const PERMISSIONS: PermissionSeed[] = [
   ...crud("pos", "pos", "the point of sale", ["discount", "open_drawer"], ["discount"]),
   ...crud("journal", "accounting", "journal entries", ["post", "reverse"], ["post", "reverse"]),
   ...crud("account", "accounting", "the chart of accounts"),
+  // Closing a period freezes a month; reopening one un-freezes a month that has
+  // very likely already been filed. Both are marked sensitive deliberately, and
+  // `reopen` additionally carries a role-level floor in services/periods.ts —
+  // the asymmetry between the two is the entire value of the lock. Without
+  // these two rows the catalogue has no such keys, `requirePermission` denies
+  // every caller, and the close screen is unreachable for everyone: the same
+  // "control that can never fire" shape as the fail-closed check that shipped
+  // with zero callers.
+  ...crud("period", "accounting", "accounting periods", ["close", "reopen"], ["close", "reopen"])
+    .filter((p) => ["period:read", "period:close", "period:reopen"].includes(p.key)),
   ...crud("report", "accounting", "financial reports", ["export"]),
   ...crud("bank", "accounting", "bank accounts", ["reconcile"], ["reconcile"]),
   ...crud("employee", "hr", "employees"),
@@ -368,6 +378,12 @@ export const SYSTEM_ROLES: RoleSeed[] = [
     permissions: [
       "dashboard:read", "dashboard:consolidated", "party:read", "document:*",
       "payment:*", "journal:*", "account:*", "report:*", "bank:*",
+      // Closing the month is the accountant's core monthly job, so `period:*`
+      // is right here — and it is not the loophole it looks like. Reopening
+      // also requires role level >= 90 (services/periods.ts), which this role's
+      // level of 70 does not reach. She can freeze a month; only the owner can
+      // unfreeze one.
+      "period:*",
       "payroll:read", "payroll:approve", "audit:read", "ai:ask", "ai:read",
     ],
   },

@@ -21,3 +21,14 @@ export * from "./operations.ts";
 export * from "./notifications.ts";
 export * from "./outbox.ts";
 export * from "./users.ts";
+
+// Wave 2 — the capabilities the PRD called Must-have and the product did not
+// have. Each is a write path that previously did not exist at all, so the
+// pattern above holds: the service is the implementation, and the Server Action
+// is a thin caller of it.
+export * from "./periods.ts";
+export * from "./manual-entry.ts";
+export * from "./interco.ts";
+export * from "./rentals.ts";
+export * from "./cash-sessions.ts";
+export * from "./import/index.ts";

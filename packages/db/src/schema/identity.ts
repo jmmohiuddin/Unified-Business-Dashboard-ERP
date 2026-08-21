@@ -194,6 +194,98 @@ export const membershipScopes = pgTable(
 );
 
 /**
+ * PENDING INVITATIONS.
+ *
+ * Onboarding's missing half. Offboarding was solved — `deactivateUser` revokes
+ * every live session in the same transaction — but there was no way to bring
+ * somebody IN: adding a new hire meant an engineer inserting a `users` row, an
+ * argon2 hash and a membership by hand. An access control that only one person
+ * in the company can operate is an access control that stops being operated.
+ *
+ * The row is a CAPABILITY, so it is shaped like the other two credentials in
+ * this file rather than like a business record:
+ *
+ *   HASHED, never plaintext. `token_hash` holds a SHA-256 of a 256-bit random
+ *   token, exactly as `sessions` and `api_tokens` do. A dump of this table
+ *   grants nobody an account, and the link cannot be re-read out of the
+ *   database afterwards — reissuing means revoking and minting a new one.
+ *
+ *   SINGLE USE. `accepted_at` is stamped inside the accepting transaction under
+ *   a row lock, so two simultaneous redemptions of one link cannot both create
+ *   a membership.
+ *
+ *   SHORT LIVED. `expires_at` is set at creation. An invite is a key to the
+ *   company's books sitting in someone's chat history; a link that works
+ *   forever is a key that is never taken back.
+ *
+ * ROLE AND SCOPE ARE FIXED AT INVITE TIME, and this is the security point of
+ * the table rather than a convenience. `changeRole` refuses to grant rank the
+ * actor does not hold. If the invited role were chosen at redemption, or were
+ * editable afterwards by whoever holds the link, that ceiling would have a hole
+ * in the shape of a new hire. The role and the business units are decided by
+ * the inviter, checked against the inviter's own ceiling, and carried here.
+ *
+ * `business_unit_ids` is a jsonb array rather than a child table on purpose:
+ * these are a pending intention, not granted access. Nothing reads them for
+ * authorisation — they are copied into `membership_scopes`, which is the table
+ * RLS and `canAccessBusinessUnit` actually consult, at the moment the invite is
+ * accepted. A unit deleted in between is dropped there rather than failing the
+ * acceptance, because a stale line in an invitation must not be able to lock a
+ * new employee out of the product on their first morning.
+ */
+export const userInvites = pgTable(
+  "user_invites",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** Stored lower-cased by the service, so the pending-invite index below is
+     *  case-insensitive without a functional index. */
+    email: varchar("email", { length: 320 }).notNull(),
+    roleId: uuid("role_id")
+      .notNull()
+      .references(() => roles.id, { onDelete: "restrict" }),
+    scope: scopeLevel("scope").notNull().default("tenant"),
+    /** Intended `membership_scopes` rows. See the docblock above for why these
+     *  are not a child table. */
+    businessUnitIds: jsonb("business_unit_ids").notNull().default(sql`'[]'::jsonb`),
+    /** SHA-256 of the token. The plaintext exists only in the response that
+     *  created it — same contract as `api_tokens`. */
+    tokenHash: varchar("token_hash", { length: 64 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    invitedByUserId: uuid("invited_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedUserId: uuid("accepted_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("user_invites_token_uq").on(t.tokenHash),
+    /**
+     * At most ONE live invitation per address per tenant.
+     *
+     * Partial, so accepted and revoked rows accumulate as history rather than
+     * blocking the address forever — the audit question "who was invited, by
+     * whom, and did they ever accept" has to stay answerable. Re-inviting an
+     * address that already has a live invite revokes the old one in the same
+     * transaction; this index is the backstop that makes two links to the same
+     * mailbox impossible even if that logic is ever bypassed.
+     */
+    uniqueIndex("user_invites_pending_uq")
+      .on(t.tenantId, t.email)
+      .where(sql`accepted_at IS NULL AND revoked_at IS NULL`),
+  ],
+);
+
+/**
  * API tokens for the mobile app and any programmatic client.
  *
  * A token is bound to ONE membership, so it inherits that user's role, scope

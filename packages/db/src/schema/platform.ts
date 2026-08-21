@@ -605,3 +605,160 @@ export const jobRuns = pgTable(
     uniqueIndex("job_runs_inflight_uq").on(t.job).where(sql`finished_at IS NULL`),
   ],
 );
+
+// ════════════════════════════════════════════════════════════════════════════
+//  DATA MIGRATION
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * One run of the import wizard that actually committed.
+ *
+ * Dry runs are NOT recorded here. A dry run writes nothing at all, so there is
+ * nothing to reverse and nothing to be idempotent about; giving it a row would
+ * create a second, weaker meaning for "this batch exists" on the one screen
+ * where that phrase has to mean "this is in your books".
+ *
+ * Three jobs, each of which is a PRD acceptance criterion for FR-D01 rather
+ * than bookkeeping for its own sake:
+ *
+ *  1. REVERSIBILITY (72 hours). Migrated opening data being wrong is risk R2 at
+ *     critical severity, and the failure mode is not "the import crashed" — it
+ *     is "the import succeeded and the numbers are wrong", discovered two days
+ *     later by the accountant. `reversible_until` is the window; the rows the
+ *     batch touched are in `import_batch_rows`, because a reversal that cannot
+ *     name what it is undoing is a guess.
+ *
+ *  2. IDEMPOTENCY. `source_fingerprint` is a digest of the file's meaningful
+ *     content, and the partial unique index over it refuses a second commit of
+ *     the same file into the same tenant while the first is still live. The
+ *     database arbitrates, not application code: re-uploading the same
+ *     spreadsheet after a timeout is the single most likely way an accountant
+ *     doubles their opening balances.
+ *
+ *  3. SIGN-OFF. Decision D5 makes the accountant's signed reconciliation a
+ *     go-live gate. `signed_off_at` is that gate, and `expected_lines` holds
+ *     the figures the accountant's own file asserted, so the reconciliation can
+ *     be re-derived line by line months later instead of being a screenshot.
+ *
+ * `total_debit` / `total_credit` are stored rather than recomputed because the
+ * reconciliation has to compare what the file said against what the ledger
+ * holds; recomputing both sides from the ledger compares the ledger with
+ * itself and always ties.
+ */
+export const importBatches = pgTable(
+  "import_batches",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** Null for kinds that are tenant-wide rather than per business. */
+    businessUnitId: uuid("business_unit_id").references(() => businessUnits.id, {
+      onDelete: "set null",
+    }),
+    /** Which importer produced it: `opening_balances`, `parties`, … */
+    kind: varchar("kind", { length: 30 }).notNull(),
+    sourceFilename: varchar("source_filename", { length: 250 }).notNull(),
+    /** SHA-256 over the normalised file body. See the unique index below. */
+    sourceFingerprint: varchar("source_fingerprint", { length: 64 }).notNull(),
+
+    rowCount: integer("row_count").notNull().default(0),
+    createdCount: integer("created_count").notNull().default(0),
+    updatedCount: integer("updated_count").notNull().default(0),
+    skippedCount: integer("skipped_count").notNull().default(0),
+    rejectedCount: integer("rejected_count").notNull().default(0),
+
+    /** What the FILE asserted, in its own terms. Never recomputed. */
+    totalDebit: money("total_debit").notNull().default("0"),
+    totalCredit: money("total_credit").notNull().default("0"),
+    /** The per-account figures the file supplied, for line-by-line reconciliation. */
+    expectedLines: jsonb("expected_lines").notNull().default(sql`'[]'::jsonb`),
+
+    /** Set only by importers that post to the ledger — opening balances. */
+    journalId: uuid("journal_id"),
+    reversalJournalId: uuid("reversal_journal_id"),
+
+    committedByUserId: uuid("committed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    committedAt: timestamp("committed_at", { withTimezone: true }).notNull().defaultNow(),
+    /** PRD FR-D01: "reversible as a batch for 72 hours after commit". */
+    reversibleUntil: timestamp("reversible_until", { withTimezone: true }).notNull(),
+
+    reversedAt: timestamp("reversed_at", { withTimezone: true }),
+    reversedByUserId: uuid("reversed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    reversalReason: text("reversal_reason"),
+
+    signedOffAt: timestamp("signed_off_at", { withTimezone: true }),
+    signedOffByUserId: uuid("signed_off_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /** The figure the accountant supplied from their own records. */
+    signedOffTotal: money("signed_off_total"),
+    signOffNote: text("sign_off_note"),
+    ...timestamps,
+  },
+  (t) => [
+    index("import_batches_tenant_idx").on(t.tenantId, t.committedAt),
+    // The idempotency guarantee. Partial on `reversed_at IS NULL` so a batch
+    // that was reversed BECAUSE it was wrong can be corrected and re-uploaded —
+    // refusing that would make the reversal a dead end.
+    uniqueIndex("import_batches_fingerprint_uq")
+      .on(t.tenantId, t.kind, t.sourceFingerprint)
+      .where(sql`reversed_at IS NULL`),
+  ],
+);
+
+/**
+ * Every row a committed batch created or changed.
+ *
+ * This is what makes reversal reversal rather than a best guess. Two things it
+ * has to record and one it deliberately does not:
+ *
+ *   RECORDS the table and primary key, so the reversal deletes exactly the rows
+ *   the import made and nothing that merely resembles them. Matching on
+ *   `created_at` or on the imported code would also catch a row the owner typed
+ *   in by hand an hour later.
+ *
+ *   RECORDS the previous column values for an UPDATE, so reversing an update
+ *   restores the value that was there before rather than blanking the field. An
+ *   import that overwrote a credit limit and then "reversed" it to NULL has
+ *   destroyed data, not restored it.
+ *
+ *   DOES NOT record ledger postings. A journal is never deleted — the opening
+ *   balance is reversed by a second, opposite journal, which is what the rest of
+ *   the ledger already does and what an auditor expects to find.
+ *
+ * `seq` preserves insertion order so the reversal can walk it backwards and
+ * delete children before their parents, which is what lets the foreign keys do
+ * the safety checking instead of application code.
+ */
+export const importBatchRows = pgTable(
+  "import_batch_rows",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    batchId: uuid("batch_id")
+      .notNull()
+      .references(() => importBatches.id, { onDelete: "cascade" }),
+    /** Order applied. Reversal walks this descending. */
+    seq: integer("seq").notNull(),
+    /** 1-based line in the uploaded file, so an error names something the
+     *  accountant can find in their spreadsheet. */
+    rowNumber: integer("row_number").notNull(),
+    action: varchar("action", { length: 10 }).notNull(),
+    entityTable: varchar("entity_table", { length: 63 }).notNull(),
+    entityId: uuid("entity_id").notNull(),
+    /** Column values as they were before an update. Empty for a create. */
+    previous: metadata("previous"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("import_batch_rows_batch_idx").on(t.batchId, t.seq),
+    index("import_batch_rows_entity_idx").on(t.entityTable, t.entityId),
+  ],
+);

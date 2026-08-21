@@ -4,7 +4,9 @@ import { formatMoney } from "@nexus/core";
 import { requireSession } from "@/lib/session";
 import { resolveToday } from "@/lib/data";
 import { Card, CardHeader } from "@/components/ui";
-import { DataTable, FilterTabs, PageHeader, StatStrip, TableEmpty } from "@/components/page";
+import {
+  DataTable, FilterTabs, PageHeader, Pagination, StatStrip, TableEmpty, pageSlice,
+} from "@/components/page";
 
 export const dynamic = "force-dynamic";
 
@@ -18,30 +20,58 @@ export const dynamic = "force-dynamic";
  *
  * Search is a plain GET form so results are shareable and there is no client
  * JavaScript; it hits a pg_trgm index on name + phone.
+ *
+ * TWO NAMES FOR ONE SEGMENT. `customer_churn_risk` declares its drill-down as
+ * `/crm?segment=at_risk`, while this screen's own tab chips write `?filter=…`.
+ * The route guard flagged it: the path resolved, so the owner got a real page —
+ * the complete 447-record customer list rather than the 26 people the tile said
+ * were at risk. Both spellings are read here rather than renaming one end,
+ * because the metric registry is shared and its declared parameter is part of
+ * its published contract.
  */
 export default async function CrmPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; filter?: string }>;
+  searchParams: Promise<{
+    q?: string; filter?: string; segment?: string; page?: string; per?: string;
+  }>;
 }) {
   const session = await requireSession();
-  const { q = "", filter = "all" } = await searchParams;
+  const {
+    q = "", filter, segment: rawSegment, page: rawPage, per: rawPer,
+  } = await searchParams;
   const today = resolveToday(session.timezone);
   const ccy = session.baseCurrency;
   const term = q.trim();
+  // The tabs write `filter`, so it wins when both are present; `segment` is the
+  // metric registry's spelling and only ever arrives on a fresh drill-down.
+  const active = filter ?? rawSegment ?? "all";
 
-  const { rows, stats } = await withTenant(
+  const { rows, stats, slice } = await withTenant(
     { tenantId: session.tenantId, userId: session.userId },
     async (tx) => {
       const search = term
         ? sql`AND (p.display_name ILIKE ${"%" + term + "%"} OR p.primary_phone ILIKE ${"%" + term + "%"})`
         : sql``;
+      // `is_customer` is part of the at-risk definition in the metric that links
+      // here. Repeating it keeps the drill-down reconciling to the tile by
+      // construction rather than by the coincidence that every at-risk party in
+      // today's data happens to be a customer.
       const segment =
-        filter === "at_risk" ? sql`AND p.churn_risk IN ('medium','high') AND p.visit_count >= 2`
-        : filter === "tenants" ? sql`AND p.is_tenant_renter = true`
-        : filter === "suppliers" ? sql`AND p.is_supplier = true`
-        : filter === "owing" ? sql`AND p.open_balance > 0`
+        active === "at_risk"
+          ? sql`AND p.is_customer = true AND p.churn_risk IN ('medium','high') AND p.visit_count >= 2`
+        : active === "tenants" ? sql`AND p.is_tenant_renter = true`
+        : active === "suppliers" ? sql`AND p.is_supplier = true`
+        : active === "owing" ? sql`AND p.open_balance > 0`
         : sql``;
+
+      // Counted over exactly the search + segment the rows use, so "1–50 of 26"
+      // can never disagree with the tab badge beside it.
+      const [c] = await tx.execute<{ n: number }>(sql`
+        SELECT COUNT(*)::int AS n FROM parties p WHERE TRUE ${search} ${segment}
+      `);
+      const total = c?.n ?? 0;
+      const slice = pageSlice({ page: rawPage, per: rawPer }, total);
 
       const rows = await tx.execute<{
         id: string; display_name: string; type: string; phone: string | null;
@@ -59,8 +89,12 @@ export default async function CrmPage({
                  WHERE pbu.party_id = p.id) AS businesses
           FROM parties p
          WHERE TRUE ${search} ${segment}
-         ORDER BY p.lifetime_value DESC
-         LIMIT 100
+         -- Trailing p.id makes the sort total: 218 of the 447 records share a
+         -- lifetime value of zero, and OFFSET paging over a tie like that
+         -- reshuffles between requests, showing some people twice and others
+         -- never.
+         ORDER BY p.lifetime_value DESC, p.id
+         LIMIT ${slice.perPage} OFFSET ${slice.offset}
       `);
 
       const stats = await tx.execute<{
@@ -70,7 +104,7 @@ export default async function CrmPage({
         SELECT COUNT(*)::int AS total,
                COUNT(*) FILTER (WHERE is_customer)::int AS customers,
                COUNT(*) FILTER (WHERE is_tenant_renter)::int AS tenants,
-               COUNT(*) FILTER (WHERE churn_risk IN ('medium','high') AND visit_count >= 2)::int AS at_risk,
+               COUNT(*) FILTER (WHERE is_customer AND churn_risk IN ('medium','high') AND visit_count >= 2)::int AS at_risk,
                COUNT(*) FILTER (WHERE open_balance > 0)::int AS owing,
                COALESCE(SUM(open_balance), 0) AS owed,
                (SELECT COUNT(*)::int FROM (
@@ -80,7 +114,7 @@ export default async function CrmPage({
           FROM parties
       `);
 
-      return { rows, stats };
+      return { rows, stats, total, slice };
     },
   );
 
@@ -140,7 +174,10 @@ export default async function CrmPage({
           action={
             <FilterTabs
               basePath="/crm"
-              active={filter}
+              active={active}
+              // The search term travels with the tab: narrowing a search to a
+              // segment must not throw the search away.
+              params={{ q: term || undefined }}
               options={[
                 { key: "all", label: "All" },
                 { key: "at_risk", label: "At risk", count: s?.at_risk ?? 0 },
@@ -241,11 +278,12 @@ export default async function CrmPage({
             },
           ]}
         />
-        {rows.length === 100 && (
-          <p className="text-2xs text-subtle px-4 pb-3">
-            Showing the top 100 by lifetime value. Narrow with search or a segment filter.
-          </p>
-        )}
+        <Pagination
+          slice={slice}
+          basePath="/crm"
+          params={{ q: term || undefined, filter: active === "all" ? undefined : active }}
+          noun="records"
+        />
       </Card>
     </div>
   );
