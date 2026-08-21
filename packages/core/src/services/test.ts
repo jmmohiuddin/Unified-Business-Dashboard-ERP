@@ -397,11 +397,28 @@ async function main() {
       businessUnitId: openInvoice!.business_unit_id,
       amount: 25, method: "cash", receivedOn: TODAY, autoAllocate: false,
     });
+    /**
+     * The newest row, not `MAX(action)`.
+     *
+     * This used to read `MAX(action)`, which is a LEXICOGRAPHIC maximum across
+     * the entire table and only ever equalled "payment.record" by luck — no
+     * seeded action happened to sort after it. Seeding payroll runs broke that
+     * luck ("payroll.*" > "payment.record") and the check failed while the
+     * behaviour it guards was perfectly correct.
+     *
+     * A test that passes for a reason unrelated to what it claims to assert is
+     * worse than no test: it fails on unrelated changes and would equally have
+     * stayed green if `recordPayment` had written an audit row with the wrong
+     * action entirely, so long as something else in the table sorted higher.
+     */
     const after = await ctx.tx.execute<{ n: number; action: string }>(sql`
-      SELECT COUNT(*)::int n, MAX(action) AS action FROM audit_log
+      SELECT
+        (SELECT COUNT(*)::int FROM audit_log) AS n,
+        (SELECT action FROM audit_log ORDER BY at DESC, id DESC LIMIT 1) AS action
     `);
     check("every money movement writes an audit record",
-      after[0]!.n === before[0]!.n + 1 && after[0]!.action === "payment.record");
+      after[0]!.n === before[0]!.n + 1 && after[0]!.action === "payment.record",
+      `+${after[0]!.n - before[0]!.n} row, newest action "${after[0]!.action}"`);
   });
 
   // ── Payables ──────────────────────────────────────────────────────────────

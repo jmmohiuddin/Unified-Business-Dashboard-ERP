@@ -529,6 +529,21 @@ async function main() {
   check("security settings offers MFA setup", /two-factor|Two-factor/.test(secSettings));
   check("security settings offers sign-out-everywhere", /other session/.test(secSettings));
 
+  // ── Payroll run ───────────────────────────────────────────────────────────
+  //
+  // The SIF is a serialisation of an approved payroll run (FR-C06), not a
+  // computation over `employees`. These two checks guard that relationship in
+  // both directions, because breaking it is silent: the export would go on
+  // producing a plausible file from unapproved master data, and every
+  // assertion in the WPS block below would still pass.
+  console.log("\nPayroll run");
+  const payroll = (await get("/hr/payroll", owner.jar)).html;
+  check("payroll screen shows the run that backs the WPS file",
+    /Payroll runs/.test(payroll) && /August 2026/.test(payroll));
+  const noRunRes = await fetch(`${BASE}/api/wps/2019-03`, { headers: { cookie: owner.jar } });
+  check("WPS refuses a month with no approved run", noRunRes.status === 404,
+    `got ${noRunRes.status}`);
+
   // ── WPS export ────────────────────────────────────────────────────────────
   console.log("\nWPS payroll export");
   const wpsRes = await fetch(`${BASE}/api/wps/2026-08`, {
