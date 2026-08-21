@@ -1,6 +1,8 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { formatMoneyCompact } from "@nexus/core";
+import { sql } from "drizzle-orm";
+import { withTenant } from "@nexus/db";
+import { can, formatMoneyCompact } from "@nexus/core";
 import { requireSession } from "@/lib/session";
 import { loadActionItems, loadMetrics, metric, resolveToday } from "@/lib/data";
 import { dismissExceptionAction, restoreExceptionAction } from "@/lib/actions/exceptions";
@@ -17,6 +19,15 @@ import {
   KpiTile,
   Sparkline,
 } from "@/components/ui";
+import {
+  CalendarHeatmap,
+  ChartEmpty,
+  ChartSkeleton,
+  Waterfall,
+  concludeCalendar,
+  concludeWaterfall,
+  type WaterfallStep,
+} from "@/components/charts";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +56,16 @@ export const dynamic = "force-dynamic";
  * Rendering: each band is its own <Suspense> boundary, so the headline numbers
  * paint as soon as their query returns instead of waiting for the slowest
  * widget on the page.
+ *
+ * ── THE TWO CHARTS FROM WF-05 §2 ────────────────────────────────────────────
+ * The wireframe names two explanatory figures on this screen by form, and both
+ * now exist: WHY PROFIT MOVED is a waterfall (`ProfitBridgeBand`) and CASH THIS
+ * MONTH is a calendar heatmap (`CashCalendarBand`). Neither needs `"use
+ * client"`. Nothing in `components/charts/` carries state, an effect, a
+ * measurement or an event handler — hover is `:hover`, the readout is a native
+ * `title`, and the table twin is a native `<details>` — so they render inside
+ * these async server bands with no hydration cost, which is the whole reason
+ * that directory is hand-rolled rather than a charting library.
  */
 export default async function DashboardPage() {
   const session = await requireSession();
@@ -87,8 +108,16 @@ export default async function DashboardPage() {
         <HeadlineBand />
       </Suspense>
 
+      <Suspense fallback={<ChartSkeleton height={180} />}>
+        <ProfitBridgeBand />
+      </Suspense>
+
       <Suspense fallback={<div className="skeleton h-64 rounded-[var(--radius-lg)]" />}>
         <PortfolioBand />
+      </Suspense>
+
+      <Suspense fallback={<ChartSkeleton height={120} />}>
+        <CashCalendarBand />
       </Suspense>
 
       <Suspense fallback={<div className="skeleton h-56 rounded-[var(--radius-lg)]" />}>
@@ -455,6 +484,245 @@ async function SecondaryTiles() {
       <KpiTile label="Customers" result={metric(m, "customers_total")}
         currency={session.baseCurrency} />
     </>
+  );
+}
+
+// ── Band 1b: why profit moved, and when cash leaves ─────────────────────────
+
+/**
+ * Date arithmetic on ISO strings, local to this file.
+ *
+ * The metric registry has the same three helpers and does not export them; the
+ * interco screen redeclares its own `monthStart` for the same reason. Copying
+ * four lines is cheaper than widening `@nexus/core`'s public surface from a
+ * screen, and these are pure string/UTC operations with no timezone opinion of
+ * their own — "today" has already been resolved to the tenant's date by
+ * `resolveToday` before it reaches them.
+ */
+const monthStartOf = (iso: string) => `${iso.slice(0, 7)}-01`;
+
+function shiftDaysBy(iso: string, n: number): string {
+  const d = new Date(`${iso}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function prevMonthStartOf(iso: string): string {
+  const d = new Date(`${monthStartOf(iso)}T00:00:00Z`);
+  d.setUTCMonth(d.getUTCMonth() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+const monthNameOf = (iso: string) =>
+  new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-GB", { month: "long", timeZone: "UTC" });
+
+/**
+ * WHY PROFIT MOVED — the waterfall WF-05 §2 puts under the tiles.
+ *
+ * The tiles say profit is down 8%. That is the question, not the answer, and
+ * §2.1's mock is explicit about the shape of the answer: last period's profit
+ * anchored on the left, one floating bar per business showing what it added or
+ * took away, this period's profit anchored on the right. A bridge is the only
+ * form that says "these seven things, in these sizes, are the whole of the
+ * difference" — a table of before-and-after columns makes the reader do that
+ * subtraction themselves, and they will not.
+ *
+ * ── WHY THE DRIVERS ARE BUSINESSES AND NOT ACCOUNTS ─────────────────────────
+ * A bridge decomposed by expense account ("salaries +4k, rent +0k") tells the
+ * owner what kind of cost moved. This owner's actual question is *which shop*,
+ * because that is the unit he can walk into on a Tuesday. The account-level
+ * cascade exists too and is the right decomposition for an accountant — it is
+ * the waterfall on /accounting/profit-loss, one click away through the
+ * footnote below.
+ *
+ * ── WHY THE COMPARISON IS ELAPSED-DAY MATCHED ───────────────────────────────
+ * Rent and payroll post on the 1st–3rd while revenue accrues daily, so a full
+ * prior month against six days of this one is not a comparison, it is a
+ * guarantee that profit "fell". The prior window is truncated to the same day
+ * of the month, exactly as `net_profit_mtd` does for the tile above — and the
+ * two must agree, because they are the same number on the same screen.
+ *
+ * Group-level lines (payroll, gratuity, visa fees) carry no business unit and
+ * come back under their own label rather than being dropped or spread across
+ * the businesses: an incomplete bridge that looks complete is the failure mode
+ * that makes this chart untrustworthy, and `concludeWaterfall` would report the
+ * residual out loud anyway.
+ */
+async function ProfitBridgeBand() {
+  const session = await requireSession();
+  // Same gate as the portfolio band below: this decomposes group profit across
+  // the businesses, so it is consolidated data and a branch manager does not
+  // see the region at all (WF-05 §2.3 — absent, not greyed).
+  if (!can(session.principal, "dashboard:consolidated")) return null;
+
+  const today = resolveToday(session.timezone);
+  const ccy = session.baseCurrency;
+  const fmt = (v: number) => formatMoneyCompact(v, ccy);
+
+  const dayOfMonth = Number(today.slice(8, 10));
+  const mStart = monthStartOf(today);
+  const pStart = prevMonthStartOf(today);
+  const pEnd = shiftDaysBy(pStart, dayOfMonth - 1);
+
+  const rows = await withTenant(
+    { tenantId: session.tenantId, userId: session.userId },
+    async (tx) =>
+      tx.execute<{ label: string; cur: string; prior: string }>(sql`
+        WITH pl AS (
+          SELECT COALESCE(b.name, 'Group-level costs') AS label,
+                 b.sort_order AS sort_order,
+                 CASE WHEN j.posting_date >= ${mStart}::date THEN 'cur' ELSE 'prior' END AS bucket,
+                 CASE WHEN a.type = 'income' THEN jl.base_credit - jl.base_debit
+                      ELSE -(jl.base_debit - jl.base_credit) END AS profit
+            FROM journal_lines jl
+            JOIN journals j ON j.id = jl.journal_id
+            JOIN accounts a ON a.id = jl.account_id
+            LEFT JOIN business_units b ON b.id = jl.business_unit_id
+           WHERE a.type IN ('income', 'expense')
+             AND j.posting_date BETWEEN ${pStart}::date AND ${today}::date
+             AND NOT (j.posting_date > ${pEnd}::date AND j.posting_date < ${mStart}::date)
+        )
+        SELECT label,
+               COALESCE(SUM(profit) FILTER (WHERE bucket = 'cur'), 0)::text AS cur,
+               COALESCE(SUM(profit) FILTER (WHERE bucket = 'prior'), 0)::text AS prior
+          FROM pl
+         GROUP BY label, sort_order
+         ORDER BY sort_order NULLS LAST, label
+      `),
+  );
+
+  const period =
+    dayOfMonth === 1
+      ? `the first day of ${monthNameOf(today)}`
+      : `the first ${dayOfMonth} days of ${monthNameOf(today)}`;
+
+  if (rows.length === 0) {
+    return (
+      <ChartEmpty
+        title="Why profit moved"
+        conclusion={`Nothing has been posted to income or expenses in ${period} or in the same days of ${monthNameOf(pStart)}, so there is no movement to explain.`}
+        note={`${pStart} to ${pEnd} against ${mStart} to ${today}`}
+      />
+    );
+  }
+
+  const priorTotal = rows.reduce((t, r) => t + Number(r.prior), 0);
+  const curTotal = rows.reduce((t, r) => t + Number(r.cur), 0);
+
+  const steps: WaterfallStep[] = [
+    { label: `${monthNameOf(pStart)} 1–${dayOfMonth}`, value: priorTotal, kind: "total" },
+    ...rows
+      .map((r) => ({ label: r.label, value: Number(r.cur) - Number(r.prior), kind: "delta" as const }))
+      // A driver that moved by less than half a fils is a zero-height bar with
+      // a name on it — noise in a form whose whole claim is that bar length
+      // means something.
+      .filter((s) => Math.abs(s.value) >= 0.005),
+    { label: `${monthNameOf(today)} 1–${dayOfMonth}`, value: curTotal, kind: "total" },
+  ];
+
+  return (
+    <Waterfall
+      title="Why profit moved"
+      steps={steps}
+      format={fmt}
+      conclusion={concludeWaterfall(steps, fmt, { subject: "Net profit", period })}
+      note={`Each business's contribution to the change, ${monthNameOf(pStart)} 1–${dayOfMonth} against ${monthNameOf(today)} 1–${dayOfMonth} — the same elapsed days, so the comparison is like for like.`}
+      footnote={
+        <Link href="/accounting/profit-loss" className="text-accent hover:underline">
+          The same period decomposed by account, on the profit &amp; loss →
+        </Link>
+      }
+    />
+  );
+}
+
+/**
+ * CASH THIS MONTH — the calendar heatmap from WF-05 §2.
+ *
+ * §2.1's worked conclusion is "cash goes out on the 3rd and the 17th, every
+ * month", and that sentence is the argument for the form: it is a claim about
+ * *which day of the cycle*, and a 90-point line chart cannot make it because
+ * the day-of-month axis it needs does not exist on a line. A calendar puts
+ * every day of the week on a row and every week in a column, so a payroll run
+ * that always lands early in the month shows up as a vertical stripe.
+ *
+ * ── WHY NINETY DAYS AND NOT THE CALENDAR MONTH ──────────────────────────────
+ * A deliberate, reported deviation from the wireframe's "CASH THIS MONTH"
+ * label. The pattern the chart exists to expose repeats monthly, so a single
+ * month shows it exactly once and cannot distinguish "the rent went out on the
+ * 3rd" from "the rent goes out on the 3rd". Worse, the window is month-TO-DATE:
+ * on the 6th it is a six-cell strip, and `concludeCalendar` will not claim a
+ * weekday pattern from six days — correctly, since it would be a coincidence.
+ * A quarter shows the cycle three times, which is the smallest window in which
+ * the sentence can be earned rather than asserted. `cell = 13` is the
+ * component's own documented size for fitting 90 days in a phone card.
+ *
+ * Diverging mode, not sequential: the reader needs the sign. A day cash left is
+ * a different event from a day cash arrived, and one colour ramp says only "a
+ * lot happened".
+ */
+async function CashCalendarBand() {
+  const session = await requireSession();
+  if (!can(session.principal, "report:read")) return null;
+
+  const today = resolveToday(session.timezone);
+  const ccy = session.baseCurrency;
+  const fmt = (v: number) => formatMoneyCompact(v, ccy);
+  const from = shiftDaysBy(today, -89);
+
+  const rows = await withTenant(
+    { tenantId: session.tenantId, userId: session.userId },
+    async (tx) =>
+      tx.execute<{ d: string; v: string }>(sql`
+        SELECT j.posting_date::text AS d,
+               SUM(jl.base_debit - jl.base_credit)::text AS v
+          FROM journal_lines jl
+          JOIN journals j ON j.id = jl.journal_id
+          JOIN accounts a ON a.id = jl.account_id
+         WHERE a.system_key IN ('CASH', 'BANK', 'WALLET')
+           AND j.posting_date BETWEEN ${from}::date AND ${today}::date
+         GROUP BY 1
+         ORDER BY 1
+      `),
+  );
+
+  if (rows.length === 0) {
+    return (
+      <ChartEmpty
+        title="Cash in and out"
+        conclusion="No money has moved through any cash, bank or wallet account in the last 90 days."
+        note={`${from} to ${today}`}
+      />
+    );
+  }
+
+  /**
+   * A full day spine, zero-filled.
+   *
+   * `concludeCalendar` counts the bad days against `days.length`, so handing it
+   * only the days that carry a posting would make it say "negative on 6 of 74
+   * days" for a 90-day window — a denominator that quietly flatters a quiet
+   * period. A zero day is also a fact worth stating. It costs nothing visually:
+   * the heatmap bins zero to the same empty cell as a day with no row at all.
+   */
+  const posted = new Map(rows.map((r) => [r.d, Number(r.v)]));
+  const days: { date: string; value: number }[] = [];
+  for (let d = from; d <= today; d = shiftDaysBy(d, 1)) {
+    days.push({ date: d, value: posted.get(d) ?? 0 });
+  }
+
+  return (
+    <CalendarHeatmap
+      title="Cash in and out"
+      from={from}
+      to={today}
+      values={days}
+      format={fmt}
+      mode="diverging"
+      conclusion={concludeCalendar(days, fmt, { subject: "Cash", mode: "diverging" })}
+      note="Net movement across every cash, bank and wallet account, one cell per day for the last 90 days."
+      footnote="Ninety days rather than the current month: the outflow cycle repeats monthly, and one month shows it once."
+    />
   );
 }
 
