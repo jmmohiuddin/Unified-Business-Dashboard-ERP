@@ -1,7 +1,8 @@
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { sql } from "drizzle-orm";
-import { withoutTenant } from "@nexus/db";
+import { withTenant, withoutTenant } from "@nexus/db";
+import { security } from "@nexus/core";
 import {
   clearMfaChallenge,
   createMfaChallenge,
@@ -11,7 +12,7 @@ import {
   readMfaChallenge,
   verifyPassword,
 } from "@/lib/session";
-import { isMfaEnabled, verifyChallenge } from "@/lib/mfa";
+import { currentAuthLevel, isMfaEnabled, mfaRequiredFor, setAuthLevel, verifyChallenge } from "@/lib/mfa";
 import {
   clearFailedLogins,
   isLockedOut,
@@ -39,21 +40,56 @@ const DEMO_MODE = process.env.NEXUS_DEMO_MODE === "true";
  *  from locked account — each distinction is a user-enumeration oracle. */
 const FAIL = "/login?error=1";
 
+/**
+ * The role this membership carries.
+ *
+ * Read through `withTenant`, not `withoutTenant`: `memberships` and `roles` are
+ * RLS-protected and the app connection sees nothing without tenant context —
+ * the same two-phase dance getSession() does. An account with no active
+ * membership resolves to "", which requires nothing; that is not a hole,
+ * because getSession() will refuse to build a principal for it either.
+ */
+async function roleKeyFor(userId: string, tenantId: string): Promise<string> {
+  const rows = await withTenant({ tenantId, userId }, (tx) =>
+    tx.execute<{ role_key: string }>(sql`
+      SELECT r.key AS role_key
+        FROM memberships m
+        JOIN roles r ON r.id = m.role_id
+       WHERE m.user_id = ${userId}::uuid AND m.status = 'active'
+       LIMIT 1
+    `),
+  );
+  return rows[0]?.role_key ?? "";
+}
+
 async function signIn(formData: FormData) {
   "use server";
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
 
-  const ip = (await headers()).get("x-client-ip") ?? "local";
+  const h = await headers();
+  const ip = h.get("x-client-ip") ?? "local";
+  // Carried on every event below. An authentication log without the caller is
+  // a log you cannot act on during an incident.
+  const meta = { ip, userAgent: h.get("user-agent") ?? undefined };
 
   // Two independent limits. The IP throttle stops a script; the per-account
   // limit stops a targeted attack that rotates IPs.
   const byIp = await rateLimit(`login:ip:${ip}`, 30, 300);
   const byAccount = await rateLimit(`login:acct:${email}`, 10, 300);
-  if (!byIp.allowed || !byAccount.allowed) redirect("/login?error=throttled");
+  if (!byIp.allowed || !byAccount.allowed) {
+    security.throttled({
+      ...meta,
+      detail: { email, limit: byIp.allowed ? "account" : "ip" },
+    });
+    redirect("/login?error=throttled");
+  }
 
   if (await isLockedOut(email)) {
     // Same generic failure — the attacker learns nothing from the lockout.
+    // The *log* says everything, which is the whole point of keeping the two
+    // channels separate: silent to the attacker, loud to the operator.
+    security.lockout({ ...meta, detail: { email, stage: "locked account attempted" } });
     redirect(FAIL);
   }
 
@@ -73,6 +109,11 @@ async function signIn(formData: FormData) {
 
   if (!user || !user.default_tenant_id || !ok) {
     if (user) await recordFailedLogin(email);
+    security.loginFailure({
+      ...meta,
+      userId: user?.id,
+      detail: { email, reason: user ? "bad password" : "no such account" },
+    });
     redirect(FAIL);
   }
 
@@ -85,7 +126,41 @@ async function signIn(formData: FormData) {
     redirect("/login/verify");
   }
 
-  await createSession(user.id, user.default_tenant_id);
+  /**
+   * MFA is required by ROLE, not merely offered.
+   *
+   * The check above asks a question about the *user* — "did you turn this on?"
+   * — and an owner who never turned it on answered no and was let straight in.
+   * That is not an MFA policy, it is an MFA suggestion. `mfaRequiredFor` asks
+   * the question that matters: may an account with this role move money without
+   * a second factor? For owner, accountant and general manager the answer is
+   * no, so a session is issued that can reach exactly one page — the one where
+   * they can fix it. See setAuthLevel() in lib/mfa.ts for why the marker has to
+   * be positive, and proxy.ts for where it is enforced.
+   */
+  const roleKey = await roleKeyFor(user.id, user.default_tenant_id);
+  if (mfaRequiredFor(roleKey)) {
+    const restricted = await createSession(user.id, user.default_tenant_id);
+    await setAuthLevel("mfa_setup", restricted);
+    security.loginSuccess({
+      ...meta,
+      userId: user.id,
+      tenantId: user.default_tenant_id,
+      actorRole: roleKey,
+      detail: { email, outcome: "restricted — role requires MFA and none is enrolled" },
+    });
+    redirect("/settings/security?mfa=required");
+  }
+
+  const token = await createSession(user.id, user.default_tenant_id);
+  await setAuthLevel("full", token);
+  security.loginSuccess({
+    ...meta,
+    userId: user.id,
+    tenantId: user.default_tenant_id,
+    actorRole: roleKey,
+    detail: { email, outcome: "password only — role does not require MFA" },
+  });
   redirect("/");
 }
 
@@ -95,7 +170,13 @@ export default async function LoginPage({
   // Next 16: params and searchParams are Promises.
   searchParams: Promise<{ error?: string }>;
 }) {
-  if (await getSession()) redirect("/");
+  // Only a FULLY authenticated session gets bounced away from sign-in. A
+  // restricted `mfa_setup` session must be able to reach this page: proxy.ts
+  // lists /login in MFA_SETUP_PATHS precisely so the enrolment gate cannot
+  // strand anyone, and redirecting it to "/" would defeat that — the proxy
+  // sends "/" straight back to /settings/security, so someone who opened the
+  // wrong account could never get to the sign-in form to switch.
+  if ((await getSession()) && (await currentAuthLevel()) === "full") redirect("/");
   const { error } = await searchParams;
   // Not merely hidden — outside demo mode the account list is never queried,
   // so it cannot reach the client in any form.
@@ -189,7 +270,9 @@ export default async function LoginPage({
               >
                 {error === "throttled"
                   ? "Too many attempts. Wait a few minutes and try again."
-                  : "Those credentials did not match an account."}
+                  : error === "session"
+                    ? "Your session has ended. Sign in again."
+                    : "Those credentials did not match an account."}
               </p>
             )}
 

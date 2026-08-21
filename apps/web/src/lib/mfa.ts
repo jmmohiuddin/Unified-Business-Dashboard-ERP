@@ -1,4 +1,5 @@
 import "server-only";
+import { createHash, createHmac } from "node:crypto";
 import { Secret, TOTP } from "otpauth";
 import { sql } from "drizzle-orm";
 import { withoutTenant } from "@nexus/db";
@@ -7,6 +8,7 @@ import {
   encryptSecret,
   generateRecoveryCodes,
   hashRecoveryCode,
+  safeEqual,
 } from "./crypto";
 export { encryptSecret } from "./crypto";
 
@@ -100,6 +102,12 @@ export async function completeEnrolment(
        WHERE id = ${userId}::uuid
     `),
   );
+
+  // A user sent here by the login gate is holding an `mfa_setup` session that
+  // can reach nothing but this page. They have now satisfied the requirement,
+  // so lift the restriction in the same request rather than making them sign
+  // in again — a control that strands the user is a control they will disable.
+  await setAuthLevel("full");
   return true;
 }
 
@@ -199,4 +207,108 @@ export async function readStashedEnrolment(): Promise<{ secret: string; recovery
 export async function clearStashedEnrolment(): Promise<void> {
   const { cookies } = await import("next/headers");
   (await cookies()).delete(ENROL_COOKIE);
+}
+
+// ── Authentication assurance level ──────────────────────────────────────────
+
+/**
+ * HOW FAR DID THIS SESSION ACTUALLY GET?
+ *
+ * `MFA_REQUIRED_ROLES` above says an owner, accountant or general manager needs
+ * a second factor. Enforcing that at login is only half the job: the session
+ * cookie lasts thirty days, so a cookie issued before the rule existed — or one
+ * issued to a user who has not enrolled yet — must not silently keep full
+ * access. proxy.ts is the only place every request passes through, but it runs
+ * on the edge runtime and may not touch the database, so it cannot ask "does
+ * this user's role require MFA?". It has to be *told*, by the login path, in a
+ * form it can verify offline.
+ *
+ * Hence a signed marker cookie alongside the session:
+ *
+ *     <level>.<expiresAtMs>.<HMAC-SHA256 over level, expiry and session token>
+ *
+ * Two properties make it a control rather than a decoration:
+ *
+ *  1. It is POSITIVE. Full access requires the marker to be *present* and to
+ *     say `full`. Deleting or truncating it downgrades the caller to nothing,
+ *     which is what an attacker holding a stolen password would try first. A
+ *     "you are restricted" flag would have been the opposite — one cookie
+ *     deletion away from the access it was supposed to prevent.
+ *
+ *  2. It is BOUND to the session token, so a `full` marker earned by a barber
+ *     cannot be paired with an owner's session cookie.
+ *
+ * A session cookie carrying no valid marker is therefore pre-policy or forged;
+ * proxy.ts ends it and sends the caller back to sign in.
+ */
+export type AuthLevel = "full" | "mfa_setup";
+
+/** Must match COOKIE in lib/session.ts and SESSION_COOKIE in proxy.ts. */
+const SESSION_COOKIE = "nexus_session";
+/** Must match AUTH_LEVEL_COOKIE in proxy.ts, which verifies what this writes. */
+const AUTH_LEVEL_COOKIE = "nexus_auth_level";
+/** Never longer than SESSION_DAYS in lib/session.ts — the marker must not
+ *  outlive the session it attests to. */
+const AUTH_LEVEL_DAYS = 30;
+
+function authLevelMac(level: AuthLevel, expiresAt: number, sessionToken: string): string {
+  // The raw token is never stored anywhere, so bind to its digest — the same
+  // value the sessions table holds, and the same one proxy.ts recomputes.
+  const binding = createHash("sha256").update(sessionToken).digest("hex");
+  return createHmac("sha256", process.env.AUTH_SECRET ?? "")
+    .update(`${level}.${expiresAt}.${binding}`)
+    .digest("base64url");
+}
+
+/**
+ * Stamp the assurance level onto the session that was just issued.
+ *
+ * `sessionToken` is passed explicitly by the login paths, which have it from
+ * `createSession`; the enrolment path omits it and the current cookie is used.
+ * With no session there is nothing to attest, and writing nothing is the safe
+ * outcome — proxy.ts treats an unmarked session as ended.
+ */
+export async function setAuthLevel(level: AuthLevel, sessionToken?: string): Promise<void> {
+  const { cookies } = await import("next/headers");
+  const jar = await cookies();
+  const token = sessionToken ?? jar.get(SESSION_COOKIE)?.value;
+  if (!token) return;
+
+  const expiresAt = Date.now() + AUTH_LEVEL_DAYS * 86_400_000;
+  jar.set(AUTH_LEVEL_COOKIE, `${level}.${expiresAt}.${authLevelMac(level, expiresAt, token)}`, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    expires: new Date(expiresAt),
+  });
+}
+
+/**
+ * The assurance level of the current request, verified server-side.
+ *
+ * proxy.ts enforces this by PATH, which is all the edge runtime can do — and a
+ * path gate cannot constrain a Server Action, because every action posts to
+ * whatever route the user is already on. A restricted session sitting on
+ * `/settings/security` could therefore still invoke an action belonging to some
+ * other page. Closing that needs the check where the principal is resolved:
+ *
+ *     const level = await currentAuthLevel();
+ *     if (level !== "full") redirect("/settings/security?mfa=required");
+ *
+ * inside `requireSession()` in lib/session.ts. Exported here so that fix is one
+ * line rather than a second implementation of this format.
+ */
+export async function currentAuthLevel(): Promise<AuthLevel | null> {
+  const { cookies } = await import("next/headers");
+  const jar = await cookies();
+  const token = jar.get(SESSION_COOKIE)?.value;
+  const marker = jar.get(AUTH_LEVEL_COOKIE)?.value;
+  if (!token || !marker) return null;
+
+  const [level, expiresAt, mac] = marker.split(".");
+  if (level !== "full" && level !== "mfa_setup") return null;
+  if (!expiresAt || !mac || !(Number(expiresAt) > Date.now())) return null;
+  const expected = authLevelMac(level, Number(expiresAt), token);
+  return expected.length === mac.length && safeEqual(expected, mac) ? level : null;
 }

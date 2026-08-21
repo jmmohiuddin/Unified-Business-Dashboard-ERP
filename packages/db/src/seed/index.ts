@@ -40,6 +40,85 @@ config({ path: "../../.env.example" });
 const db = adminDb();
 const rng = makeRng(20260806);
 
+/**
+ * IS THE SEED TARGET A LAPTOP?
+ *
+ * The gate is the database HOST, not NODE_ENV. NODE_ENV is unset on a laptop,
+ * so a NODE_ENV check would happily seed a cloud database from a developer
+ * machine — which is precisely how the demo API token first reached a live
+ * deployment. "Is the target localhost?" is the question that actually protects
+ * the deployment, and it is asked once here so that every credential this file
+ * writes can be gated on the same answer.
+ */
+const SEED_TARGET_HOST = (() => {
+  try {
+    return new URL(process.env.DATABASE_URL ?? "").hostname;
+  } catch {
+    return "";
+  }
+})();
+const IS_LOCAL_TARGET = ["localhost", "127.0.0.1", "::1", "host.docker.internal"].includes(
+  SEED_TARGET_HOST,
+);
+
+/** Local demo password. Public — it is a literal in a public repository. */
+const LOCAL_DEMO_PASSWORD = "demo1234";
+
+/**
+ * The password every seeded account gets.
+ *
+ * `demo1234` is fine on a laptop and unacceptable on anything reachable: the
+ * repository is public, the nine account addresses are listed twenty lines
+ * below, and `owner@sumon.test` holds `permissions: ["*"]`. Publishing the
+ * password of a role that can read every journal, every employee IBAN and the
+ * WPS export is not a demo affordance, it is a backdoor.
+ *
+ * So the same host gate the demo API token uses applies here. Off a laptop the
+ * seed refuses to invent a password: SEED_PASSWORD must be supplied and must
+ * not be the published one. Resolved at module scope on purpose — it runs
+ * before main(), so a misconfigured remote seed fails *before* wipe() has
+ * truncated anything.
+ */
+function resolveSeedPassword(): string {
+  const supplied = process.env.SEED_PASSWORD;
+
+  if (IS_LOCAL_TARGET) {
+    // A laptop may still override it; there is just no requirement to.
+    return supplied && supplied.length > 0 ? supplied : LOCAL_DEMO_PASSWORD;
+  }
+
+  const target = SEED_TARGET_HOST || "unknown";
+  if (!supplied) {
+    console.error(
+      `✗ Refusing to seed users: the target is "${target}", not localhost, and ` +
+        `SEED_PASSWORD is not set.\n` +
+        `  The built-in demo password is a literal in a public repository, so seeding ` +
+        `it here would publish owner access.\n` +
+        `  Set SEED_PASSWORD to something you generated (npm run keygen), or point ` +
+        `DATABASE_URL at a local database.`,
+    );
+    process.exit(1);
+  }
+  if (supplied === LOCAL_DEMO_PASSWORD) {
+    console.error(
+      `✗ Refusing to seed users: SEED_PASSWORD is the published demo password and the ` +
+        `target is "${target}".`,
+    );
+    process.exit(1);
+  }
+  if (supplied.length < 12) {
+    // Mirrors validatePasswordStrength in apps/web/src/lib/crypto.ts — a seeded
+    // account must not be weaker than one a user could set through the product.
+    console.error(
+      `✗ Refusing to seed users: SEED_PASSWORD is shorter than 12 characters.`,
+    );
+    process.exit(1);
+  }
+  return supplied;
+}
+
+const SEED_PASSWORD = resolveSeedPassword();
+
 /** Anchor date. Fixed so "this month" is reproducible across machines. */
 const TODAY = new Date("2026-08-06T00:00:00.000Z");
 /** Mid-afternoon "now", so today is a realistic *partial* trading day. */
@@ -225,8 +304,17 @@ async function main() {
    * Real argon2id hashes, with the same parameters the app verifies against.
    * Hashed once and reused across the demo accounts — deriving 9 separate
    * 64 MiB hashes would add several seconds to every seed for no benefit.
+   *
+   * The plaintext is never a literal here. resolveSeedPassword() has already
+   * decided, at module load, whether this target may have the published demo
+   * password or must supply its own; see its docblock.
    */
-  const DEMO_HASH = await argon2Hash("demo1234", {
+  console.log(
+    IS_LOCAL_TARGET
+      ? `· Users (local target "${SEED_TARGET_HOST}" — demo password)…`
+      : `· Users (remote target "${SEED_TARGET_HOST}" — SEED_PASSWORD)…`,
+  );
+  const DEMO_HASH = await argon2Hash(SEED_PASSWORD, {
     memoryCost: 65536,
     timeCost: 3,
     parallelism: 4,
@@ -1471,21 +1559,12 @@ async function main() {
   // which is committed to a public repository — a bearer token is checked before
   // login, MFA and the rate limiter, so seeding it into a reachable deployment
   // hands full owner access to anyone who can read the source. The e2e suite
-  // needs it and only ever runs against localhost, so gate it on NODE_ENV and
-  // let the suite fail loudly anywhere else rather than create a live backdoor.
-  // The gate is the database HOST, not NODE_ENV. NODE_ENV is unset on a laptop,
-  // so a NODE_ENV check would happily mint the token while seeding a cloud
-  // database from a developer machine — which is precisely how this token first
-  // reached a live deployment. "Is the target localhost?" is the question that
-  // actually protects the deployment.
-  const seedTarget = process.env.DATABASE_URL ?? "";
-  const targetHost = (() => {
-    try { return new URL(seedTarget).hostname; } catch { return ""; }
-  })();
-  const isLocalTarget = ["localhost", "127.0.0.1", "::1", "host.docker.internal"].includes(targetHost);
-
-  if (!isLocalTarget || process.env.SEED_DEMO_TOKEN === "false") {
-    console.log(`· Skipping the demo API token — target is "${targetHost || "unknown"}", not localhost.`);
+  // needs it and only ever runs against localhost, so let the suite fail loudly
+  // anywhere else rather than create a live backdoor. The host gate itself is
+  // IS_LOCAL_TARGET, defined at the top of this file — the same answer that
+  // decides whether the account passwords may be the published ones.
+  if (!IS_LOCAL_TARGET || process.env.SEED_DEMO_TOKEN === "false") {
+    console.log(`· Skipping the demo API token — target is "${SEED_TARGET_HOST || "unknown"}", not localhost.`);
   } else {
     const { createHash } = await import("node:crypto");
     const demoToken = "nxk_demo_seed_token_do_not_use_in_prod";
@@ -1533,7 +1612,13 @@ async function main() {
   for (const c of counts) console.log(`   ${c.k.padEnd(16)} ${c.n}`);
   console.log(`\n   Sumon Group — Dubai · AED · 5% VAT · calendar fiscal year`);
   console.log(`   Gratuity liability: AED ${gratuityNow.toLocaleString("en-AE", { maximumFractionDigits: 0 })}`);
-  console.log(`   Sign in: owner@sumon.test / demo1234\n`);
+  // Never echo SEED_PASSWORD — the operator supplied it and it is a live
+  // credential. Only the published local one is safe to print.
+  console.log(
+    IS_LOCAL_TARGET && SEED_PASSWORD === LOCAL_DEMO_PASSWORD
+      ? `   Sign in: owner@sumon.test / ${LOCAL_DEMO_PASSWORD}\n`
+      : `   Sign in: owner@sumon.test / the SEED_PASSWORD you supplied\n`,
+  );
   process.exit(0);
 }
 
