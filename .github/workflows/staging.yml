@@ -1,0 +1,457 @@
+name: Staging
+
+# STAGING PIPELINE — the thing OPS-07 §2.1 row 3 has always asked for.
+#
+# "Migration applied to staging and the staging smoke test passed" has been an
+# untickable box since the project started, because there was no staging. CI
+# applies migrations to a throwaway Postgres on every PR, which proves the SQL
+# parses and the schema converges — it proves nothing about what the migration
+# does to eleven thousand existing journals. That is the gap this closes.
+#
+# The order of the jobs is the order of OPS-07 §2.2 and is not negotiable:
+# migrate as an explicit gated step, THEN deploy, THEN smoke, THEN promote.
+# A deploy that carries its own migration has no point at which someone can
+# look at the row counts and stop.
+#
+# ── This pipeline is switched off until the owner turns it on ────────────────
+#
+# It cannot create a Neon branch, a Vercel project or a secret, so until those
+# exist it would either fail on every push to main or — far worse — pass while
+# doing nothing. It does neither: the `preflight` job reads the repository
+# variable STAGING_ENABLED and, when that is not "true", writes a warning
+# annotation and a job summary saying exactly which OPS-07 rows remain
+# untickable, then stops. Nothing downstream runs and nothing reports success.
+#
+# When STAGING_ENABLED is "true", missing configuration is a hard failure. The
+# setup checklist is docs/08-staging.md § 6.
+#
+# ── What is NOT enforced here ───────────────────────────────────────────────
+#
+# `environment: production` on the promote job is only an approval gate once the
+# owner has added required reviewers to that environment in repository settings.
+# GitHub creates an unprotected environment implicitly if it does not exist, so
+# an unconfigured repository gets a job that looks gated and is not. That is
+# checklist item 9 and it is the single most forgettable step here.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      financial_migration:
+        description: >-
+          Tick only when this migration is DELIBERATELY financial. The trial
+          balance check below refuses a migration that moves money, and this is
+          the explicit statement that the movement is intended (OPS-07 §2.5).
+        type: boolean
+        default: false
+
+# One staging database, one pipeline at a time — and never cancelled. A
+# cancelled `drizzle-kit migrate` leaves the chain half-applied, which is a
+# worse state than a queued run.
+concurrency:
+  group: staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. The guard's own proof ──────────────────────────────────────────────
+  #
+  # Runs before anything reads a secret, and needs none itself. If the
+  # environment fence has been broken by an edit, the pipeline stops here
+  # rather than at the step where it would have refused to migrate.
+  fence:
+    name: Environment fence self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      # No `npm ci`: check-env.mjs is deliberately dependency-free so it can run
+      # in a Vercel build command and here, before install.
+      - run: node scripts/check-env.mjs --self-test
+
+  # ── 2. Is there a staging environment to talk to? ─────────────────────────
+  preflight:
+    name: Preflight
+    needs: fence
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+    steps:
+      - id: gate
+        env:
+          # Secrets cannot be read in a job-level `if`, so presence is reduced
+          # to a boolean here. The values themselves are never echoed.
+          ENABLED: ${{ vars.STAGING_ENABLED }}
+          HAVE_ADMIN_URL: ${{ secrets.STAGING_DATABASE_URL != '' }}
+          HAVE_APP_URL: ${{ secrets.STAGING_APP_DATABASE_URL != '' }}
+          HAVE_VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN != '' }}
+          HAVE_VERCEL_ORG: ${{ secrets.VERCEL_ORG_ID != '' }}
+          HAVE_VERCEL_PROJECT: ${{ secrets.VERCEL_PROJECT_ID_STAGING != '' }}
+          FENCE: ${{ vars.NEXUS_PRODUCTION_DB_HOST }}
+        run: |
+          set -euo pipefail
+
+          if [ "${ENABLED:-}" != "true" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Staging is not configured::No staging environment exists yet, so this commit will reach production unproven. See docs/08-staging.md § 6."
+            {
+              echo "## Staging is not configured"
+              echo
+              echo 'The repository variable `STAGING_ENABLED` is not `true`, so this pipeline'
+              echo 'stopped before touching anything. It is switched off rather than failing'
+              echo 'because the resources it needs — a Neon branch, a Vercel project, five'
+              echo 'secrets — can only be created by the owner.'
+              echo
+              echo "**What that costs, concretely:**"
+              echo
+              echo '| OPS-07 row | State |'
+              echo '| --- | --- |'
+              echo '| §1.3 "A staging environment exists and every migration passes through it first" | not satisfied |'
+              echo '| §2.1 "Migration applied to staging and the staging smoke test passed" | cannot be ticked |'
+              echo '| §2.5 "For a data-shape migration, a reversal script exists and has been run on staging" | cannot be ticked |'
+              echo '| §3.1 week −2 "Full dry-run against a staging copy" | no copy exists |'
+              echo '| §3.1 week −1 "Second dry-run. Accountant signs" | no copy exists |'
+              echo
+              echo 'The last two are the primary mitigation for critical risk **R2** —'
+              echo 'migrated opening balances being wrong. Until this is on, the only place'
+              echo 'to dry-run the opening-balance import is production.'
+              echo
+              echo 'Setup checklist: `docs/08-staging.md` § 6.'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          missing=""
+          [ "$HAVE_ADMIN_URL"     = "true" ] || missing="$missing STAGING_DATABASE_URL"
+          [ "$HAVE_APP_URL"       = "true" ] || missing="$missing STAGING_APP_DATABASE_URL"
+          [ "$HAVE_VERCEL_TOKEN"  = "true" ] || missing="$missing VERCEL_TOKEN"
+          [ "$HAVE_VERCEL_ORG"    = "true" ] || missing="$missing VERCEL_ORG_ID"
+          [ "$HAVE_VERCEL_PROJECT" = "true" ] || missing="$missing VERCEL_PROJECT_ID_STAGING"
+          [ -n "${FENCE:-}" ]               || missing="$missing NEXUS_PRODUCTION_DB_HOST(variable)"
+
+          if [ -n "$missing" ]; then
+            echo "::error title=Staging is enabled but not configured::Missing:$missing"
+            echo "STAGING_ENABLED is true, so this is a hard failure rather than a skip." >&2
+            echo "Missing:$missing" >&2
+            echo "See docs/08-staging.md § 6." >&2
+            exit 1
+          fi
+
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "Staging is configured." >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 3. Migrate staging, and measure what the migration did ────────────────
+  migrate:
+    name: Migrate staging
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # The declaration half of the fence. Note it is NOT derived from
+      # VERCEL_ENV or NODE_ENV: this job is staging because it says so.
+      NEXUS_ENV: staging
+      NEXUS_PRODUCTION_DB_HOST: ${{ vars.NEXUS_PRODUCTION_DB_HOST }}
+      NEXUS_PRODUCTION_KEY_DIGEST: ${{ vars.NEXUS_PRODUCTION_KEY_DIGEST }}
+      DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+      APP_DATABASE_URL: ${{ secrets.STAGING_APP_DATABASE_URL }}
+      # apply-rls.ts creates the nexus_app role; without this it would use the
+      # role name as the password, which on a reachable host is not a password.
+      APP_ROLE_PASSWORD: ${{ secrets.STAGING_APP_ROLE_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # THE load-bearing step. If STAGING_DATABASE_URL has production's
+      # hostname in it — the single mistake that would make this pipeline worse
+      # than having none — `drizzle-kit migrate` never runs.
+      - name: Refuse to migrate production
+        run: node scripts/check-env.mjs
+
+      - run: npm ci --no-audit --no-fund
+
+      # OPS-07 §2.5 rows 1 and 2, taken before the migration touches anything.
+      # Row counts are exact, not the planner's estimate: `n_live_tup` drifts
+      # from reality between vacuums, and a count that is approximately right is
+      # no use in a before-and-after comparison.
+      - name: Baseline — row counts and trial balance
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -Atq <<'SQL' > /tmp/rows-before.txt
+          SELECT table_name || '=' ||
+                 (xpath('/row/c/text()',
+                        query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name),
+                                     false, true, '')))[1]::text
+            FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+           ORDER BY table_name;
+          SQL
+          psql "$DATABASE_URL" -Atq <<'SQL' > /tmp/tb-before.txt
+          SELECT tenant_id::text || ' D' || sum(base_debit)::text || ' C' || sum(base_credit)::text
+            FROM journal_lines GROUP BY tenant_id ORDER BY tenant_id::text;
+          SQL
+          echo "$(wc -l < /tmp/rows-before.txt) tables, $(wc -l < /tmp/tb-before.txt) tenants measured."
+
+      # Two steps, deliberately. `db:migrate` applies the committed chain;
+      # `db:rls` creates/refreshes the nexus_app role, which is a runtime
+      # concern and is not in the chain (see instrumentation.ts on why a fresh
+      # Neon branch has the policies but not the role).
+      - name: Apply the committed migration chain
+        run: npm run db:migrate
+
+      - name: Apply RLS policies and the application role
+        run: npm run db:rls
+
+      - name: After — row counts and trial balance
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -Atq <<'SQL' > /tmp/rows-after.txt
+          SELECT table_name || '=' ||
+                 (xpath('/row/c/text()',
+                        query_to_xml(format('SELECT count(*) AS c FROM %I.%I', table_schema, table_name),
+                                     false, true, '')))[1]::text
+            FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+           ORDER BY table_name;
+          SQL
+          psql "$DATABASE_URL" -Atq <<'SQL' > /tmp/tb-after.txt
+          SELECT tenant_id::text || ' D' || sum(base_debit)::text || ' C' || sum(base_credit)::text
+            FROM journal_lines GROUP BY tenant_id ORDER BY tenant_id::text;
+          SQL
+
+          {
+            echo "## Staging migration"
+            echo
+            echo "### Row count changes"
+            echo
+            echo '```'
+            diff /tmp/rows-before.txt /tmp/rows-after.txt || true
+            echo '```'
+            echo
+            echo "### Trial balance"
+            echo
+            echo '```'
+            diff /tmp/tb-before.txt /tmp/tb-after.txt && echo "unchanged" || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # OPS-07 §2.5 row 2: "Trial balance before and after — must be identical
+      # unless the migration is deliberately financial."
+      #
+      # The escape hatch is a workflow_dispatch input rather than a repository
+      # variable on purpose. A variable is a setting somebody flips once and
+      # forgets, which would disarm this permanently; an input only exists on a
+      # run a human deliberately started, and the value is recorded against that
+      # run. It is a statement about ONE migration, not a mode.
+      - name: The trial balance must not have moved
+        run: |
+          set -euo pipefail
+          if diff -q /tmp/tb-before.txt /tmp/tb-after.txt >/dev/null; then
+            echo "✓ Trial balance is identical before and after."
+            exit 0
+          fi
+          if [ "${{ github.event.inputs.financial_migration }}" = "true" ]; then
+            echo "! Trial balance moved, and this run was dispatched as a deliberately financial migration."
+            diff /tmp/tb-before.txt /tmp/tb-after.txt || true
+            exit 0
+          fi
+          echo "::error title=The migration moved money::Trial balance differs before and after."
+          diff /tmp/tb-before.txt /tmp/tb-after.txt || true
+          echo "If this is intended, re-run from the Actions tab with 'financial_migration' ticked (OPS-07 §2.5)." >&2
+          exit 1
+
+  # ── 4. Deploy the application to staging ──────────────────────────────────
+  deploy:
+    name: Deploy staging
+    needs: [preflight, migrate]
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_STAGING }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      # `vercel pull` brings down the staging project's own environment
+      # variables, so the build runs against staging's NEXUS_ENV and
+      # APP_DATABASE_URL — which means the fence in the project's build command
+      # is evaluated here too, against the values that will actually serve.
+      #
+      # `--environment=production` is correct and is the reason NEXUS_ENV has to
+      # be declared explicitly: a dedicated staging project's own production
+      # environment IS staging, and VERCEL_ENV will read "production".
+      - name: Pull the staging project's configuration
+        run: npx --yes vercel@latest pull --yes --environment=production
+
+      - name: Build
+        run: npx --yes vercel@latest build --prod
+
+      - name: Deploy
+        id: deploy
+        run: |
+          set -euo pipefail
+          # `tail -n1`: the CLI writes progress to stderr but has been known to
+          # add a line to stdout, and a URL with a stray prefix produces a smoke
+          # test that fetches nothing and blames the deployment.
+          url=$(npx --yes vercel@latest deploy --prebuilt --prod | tail -n1)
+          case "$url" in https://*) ;; *) echo "::error::Vercel did not return a deployment URL"; exit 1 ;; esac
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed $url" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 5. Prove the deployed instance actually serves ────────────────────────
+  smoke:
+    name: Staging smoke test
+    needs: [preflight, deploy]
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      # The same scripts/smoke.mjs that CI runs against its own instance and
+      # that §2.2 runs after a production deploy. One script, three targets —
+      # so the assertions cannot rot in the one place nobody looks.
+      #
+      # SMOKE_ALLOW_DEMO is deliberately not set. Staging holds a copy of real
+      # (anonymised) data and must never publish seeded credentials on its
+      # sign-in page, so the strict check is the right one here.
+      - name: Smoke test the deployed staging instance
+        env:
+          SMOKE_BASE: ${{ needs.deploy.outputs.url }}
+        run: npm run smoke
+
+  # ── 6. The verdict ────────────────────────────────────────────────────────
+  #
+  # One named check to require in branch protection. It exists because
+  # "everything above is green" is not a status another system can depend on,
+  # and because a required check that can be satisfied by a skipped job is not a
+  # gate. This one fails if any stage did not succeed.
+  verdict:
+    name: Staging verdict
+    needs: [preflight, migrate, deploy, smoke]
+    if: always() && needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every stage must have succeeded
+        run: |
+          set -euo pipefail
+          migrate='${{ needs.migrate.result }}'
+          deploy='${{ needs.deploy.result }}'
+          smoke='${{ needs.smoke.result }}'
+          echo "migrate=$migrate deploy=$deploy smoke=$smoke"
+          if [ "$migrate" != "success" ] || [ "$deploy" != "success" ] || [ "$smoke" != "success" ]; then
+            echo "::error title=Staging did not pass::This commit must not be promoted to production."
+            exit 1
+          fi
+          {
+            echo "## Staging passed"
+            echo
+            echo 'These OPS-07 rows are now evidenced by this run:'
+            echo
+            echo '- §2.1 "Migration applied to staging and the staging smoke test passed"'
+            echo '- §2.5 "Row counts before and after, for every table the migration touches"'
+            echo '- §2.5 "Trial balance before and after — must be identical unless the migration is deliberately financial"'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 7. Production promotion (ADR-002 action 4) ────────────────────────────
+  #
+  # Off by default and separately switched, because turning it on is a change to
+  # how production is deployed, not a change to this pipeline. It only means
+  # anything once the owner has ALSO disabled Vercel's git auto-deploy on the
+  # production project — otherwise production deployed itself the moment main
+  # was pushed and nothing above gated anything. Checklist items 8 and 9.
+  promote:
+    name: Promote to production
+    needs: [preflight, verdict]
+    if: needs.preflight.outputs.enabled == 'true' && vars.PROMOTE_FROM_CI == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # The explicit approval ADR-002 asks for — ONLY once required reviewers are
+    # configured on this environment. See the header.
+    environment: production
+    env:
+      NEXUS_ENV: production
+      NEXUS_PRODUCTION_DB_HOST: ${{ vars.NEXUS_PRODUCTION_DB_HOST }}
+      DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+      APP_DATABASE_URL: ${{ secrets.PRODUCTION_APP_DATABASE_URL }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID_PRODUCTION }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Refuse to promote without production configuration
+        env:
+          HAVE_DB: ${{ secrets.PRODUCTION_DATABASE_URL != '' }}
+          HAVE_PROJECT: ${{ secrets.VERCEL_PROJECT_ID_PRODUCTION != '' }}
+        run: |
+          set -euo pipefail
+          missing=""
+          [ "$HAVE_DB" = "true" ] || missing="$missing PRODUCTION_DATABASE_URL"
+          [ "$HAVE_PROJECT" = "true" ] || missing="$missing VERCEL_PROJECT_ID_PRODUCTION"
+          if [ -n "$missing" ]; then
+            echo "::error title=PROMOTE_FROM_CI is on but production is not configured::Missing:$missing"
+            exit 1
+          fi
+
+      # The same fence, the other way round: this job declares production, so
+      # check-env.mjs refuses if PRODUCTION_DATABASE_URL does NOT point at the
+      # declared production host — i.e. if someone has just wired the promotion
+      # job to the staging branch.
+      - name: Confirm this is production
+        run: node scripts/check-env.mjs
+
+      - run: npm ci --no-audit --no-fund
+
+      # OPS-07 §2.2 row 1: the migration is its own gated step, before the app
+      # deploy, never a side effect of it.
+      - name: Apply migrations to production
+        run: |
+          npm run db:migrate
+          npm run db:rls
+
+      - name: Pull, build and deploy production
+        id: deploy
+        run: |
+          set -euo pipefail
+          npx --yes vercel@latest pull --yes --environment=production
+          npx --yes vercel@latest build --prod
+          url=$(npx --yes vercel@latest deploy --prebuilt --prod | tail -n1)
+          case "$url" in https://*) ;; *) echo "::error::Vercel did not return a deployment URL"; exit 1 ;; esac
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      # OPS-07 §2.2 row 5. A failure here does not roll back by itself — §2.4
+      # is a human decision — but it fails the run so nobody records a green
+      # deploy that was not serving.
+      - name: Post-deploy smoke test
+        env:
+          SMOKE_BASE: ${{ steps.deploy.outputs.url }}
+        run: npm run smoke
