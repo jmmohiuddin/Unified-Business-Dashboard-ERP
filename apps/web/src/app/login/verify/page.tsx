@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import Link from "next/link";
+import { security } from "@nexus/core";
 import { clearMfaChallenge, createSession, readMfaChallenge } from "@/lib/session";
-import { verifyChallenge } from "@/lib/mfa";
+import { setAuthLevel, verifyChallenge } from "@/lib/mfa";
 import { rateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -20,22 +21,42 @@ async function verifyMfa(formData: FormData) {
   const pending = await readMfaChallenge();
   if (!pending) redirect("/login?error=1");
 
-  const ip = (await headers()).get("x-client-ip") ?? "local";
+  const h = await headers();
+  const ip = h.get("x-client-ip") ?? "local";
+  const meta = {
+    ip,
+    userAgent: h.get("user-agent") ?? undefined,
+    userId: pending.userId,
+    tenantId: pending.tenantId,
+  };
   // Tighter than the password limit: six digits is a small keyspace, so the
   // number of guesses matters far more than it does for a passphrase.
   const limit = await rateLimit(`mfa:${pending.userId}:${ip}`, 8, 300);
   if (!limit.allowed) {
+    security.throttled({ ...meta, detail: { stage: "mfa challenge" } });
     await clearMfaChallenge();
     redirect("/login?error=throttled");
   }
 
   const result = await verifyChallenge(pending.userId, code);
   if (result === "invalid" || result === "not_enrolled") {
+    // Someone who cleared the password factor and cannot clear the second one
+    // is the single most interesting event in this file — it is what a stolen
+    // or phished password looks like from the server's side.
+    security.mfaFailure({ ...meta, detail: { result } });
     redirect("/login/verify?error=1");
   }
 
   await clearMfaChallenge();
-  await createSession(pending.userId, pending.tenantId);
+  const token = await createSession(pending.userId, pending.tenantId);
+  // The second factor is satisfied, so this session is unrestricted regardless
+  // of what the role requires. See setAuthLevel() in lib/mfa.ts.
+  await setAuthLevel("full", token);
+  if (result === "recovery_used") {
+    // Alertable: a recovery code means the authenticator is gone, which is
+    // either a lost phone or an attacker who has one and not the other.
+    security.recoveryUsed({ ...meta, detail: { stage: "login" } });
+  }
   redirect(result === "recovery_used" ? "/?recovery=1" : "/");
 }
 

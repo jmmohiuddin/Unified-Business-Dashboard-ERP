@@ -8,7 +8,7 @@ import type { SessionUser } from "./session.ts";
 /**
  * "Today" is the tenant's today, not the server's.
  *
- * A shop in Dhaka closing at 22:00 must not have its takings roll into
+ * A shop in Dubai closing at 22:00 must not have its takings roll into
  * tomorrow because the server is on UTC. Every metric receives this value
  * rather than reading the clock itself, which also makes the whole layer
  * testable and keeps the demo dataset reproducible.
@@ -25,15 +25,61 @@ export function tenantToday(timezone: string): string {
 /**
  * The demo dataset is anchored to a fixed date so screenshots, docs and the
  * metric snapshot tests all agree on what "this month" means.
- *
- * `||` rather than `??` on purpose: Next's `env` block injects an empty string
- * for unset variables, and `?? ` treats "" as a present value — which silently
- * sends `''::date` to Postgres.
  */
-const DEMO_TODAY = process.env.NEXUS_DEMO_TODAY || "2026-08-06";
+const DEMO_TODAY_DEFAULT = "2026-08-06";
+
+/**
+ * A pinned date is honoured only if it is a real calendar date.
+ *
+ * The regex alone is not enough: "2026-13-45" matches the shape and would go
+ * on to Postgres as `'2026-13-45'::date`, which errors at query time in a
+ * request handler rather than at the point the value was configured. Round-
+ * tripping through Date catches that, and catches the empty string that an
+ * unset variable can arrive as — `''::date` is the same failure one step
+ * further along.
+ */
+function isCalendarDate(iso: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return false;
+  const d = new Date(`${iso}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === iso;
+}
+
+/**
+ * Demo mode has to be asked for. It is never the default.
+ *
+ * This check used to read `NEXUS_DEMO_MODE === "off"`, so the *absence* of an
+ * environment variable selected the frozen demo date. On a deployment where
+ * nobody thought to set the flag — the normal case — every invoice, payment,
+ * bill and stock count was written with a posting date of 2026-08-06, and
+ * every ageing bucket, VAT period and cheque due-date computed from it was
+ * fiction with nothing on screen to say so. A fail-safe that requires an
+ * environment variable to be present in order to behave safely is inverted:
+ * the unconfigured state must be the safe one, so the real clock wins unless
+ * demo mode is explicitly requested.
+ *
+ * Two opt-ins, both explicit, matching how the rest of the codebase reads
+ * these variables:
+ *
+ *   NEXUS_DEMO_MODE=true   the sign-in page's demo affordances use the same
+ *                          value (apps/web/src/app/login/page.tsx), and the
+ *                          boot gate treats it as fatal in production
+ *                          (packages/core/src/security/config.ts).
+ *   NEXUS_DEMO_TODAY=<ISO> pins the clock without the credential affordances.
+ *                          CI sets only this one, which is what keeps the e2e
+ *                          run deterministic against the anchored seed.
+ *
+ * Anything else — unset, empty, misspelt, malformed — is real time.
+ */
+export function demoModeActive(): boolean {
+  return (
+    process.env.NEXUS_DEMO_MODE === "true" || isCalendarDate(process.env.NEXUS_DEMO_TODAY ?? "")
+  );
+}
 
 export function resolveToday(timezone: string): string {
-  return process.env.NEXUS_DEMO_MODE === "off" ? tenantToday(timezone) : DEMO_TODAY;
+  if (!demoModeActive()) return tenantToday(timezone);
+  const pinned = process.env.NEXUS_DEMO_TODAY ?? "";
+  return isCalendarDate(pinned) ? pinned : DEMO_TODAY_DEFAULT;
 }
 
 export interface BusinessUnitSummary {

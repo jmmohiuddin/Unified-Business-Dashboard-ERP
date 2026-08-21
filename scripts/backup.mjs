@@ -12,14 +12,27 @@
  */
 import { execFileSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { resolve } from "node:path";
 import { config } from "dotenv";
 import postgres from "postgres";
 
+/**
+ * `.env` only — NEVER `.env.example`.
+ *
+ * This file used to load `.env.example` as a fallback. `.env.example` is
+ * committed to the repository and ships a non-empty BACKUP_ENCRYPTION_KEY, so
+ * the fail-closed assertion below was satisfied by a value that anyone who has
+ * cloned the repo already holds. The check reported success and the backup was
+ * written under a published key: the same silent degradation the assertion was
+ * added to prevent, one indirection further back.
+ *
+ * An example file is documentation. Treating it as configuration means the
+ * safest-looking deployment — one that never set the variable at all — is the
+ * one that gets the publicly known key.
+ */
 config({ path: ".env" });
-config({ path: ".env.example" });
 
 const url = new URL(process.env.DATABASE_URL ?? "postgresql://nexus:nexus@127.0.0.1:5432/nexus");
 const dbName = url.pathname.slice(1);
@@ -47,14 +60,80 @@ const outDir = resolve(process.env.BACKUP_DIR ?? "./backups");
  * degrades to "no control" when a variable is missing is not a control — and
  * the missing-variable case is exactly the hurried production run you most need
  * it for. There is no unencrypted path any more.
+ *
+ * "Fail closed" then has to mean more than "the variable is non-empty", or the
+ * control degrades again the moment something supplies a value nobody chose.
+ * `rejectKey` below is the assertion; it refuses anything short, low-entropy,
+ * placeholder-shaped, or equal to the key `.env.example` publishes.
  */
 const backupKeyRaw = process.env.BACKUP_ENCRYPTION_KEY;
-if (!backupKeyRaw) {
+
+/** The value `.env.example` publishes for a variable, or null. Read directly
+ *  rather than via dotenv so nothing from the example file can reach the
+ *  environment — it is only ever compared against, never used. */
+function committedPlaceholder(key) {
+  try {
+    const line = readFileSync(resolve(".env.example"), "utf8")
+      .split("\n")
+      .find((l) => l.trimStart().startsWith(`${key}=`));
+    if (!line) return null;
+    const value = line.slice(line.indexOf("=") + 1).trim().replace(/^["']|["']$/g, "");
+    return value === "" ? null : value;
+  } catch {
+    // No .env.example on a deployed host. Nothing to compare against.
+    return null;
+  }
+}
+
+/**
+ * What "set" has to mean.
+ *
+ * Presence was the whole test, which is why a 20-character placeholder passed
+ * it. These three refusals cover the ways a key can be present and worthless,
+ * and none of them prints the value:
+ *
+ *   · shorter than 32 characters, or drawn from barely a dozen distinct
+ *     characters — a passphrase, and scrypt only slows a dictionary attack down,
+ *     it does not stop one;
+ *   · byte-identical to what `.env.example` publishes;
+ *   · one of the placeholder strings that get pasted in and forgotten.
+ *
+ * This mirrors `looksWeak` in packages/core/src/security/config.ts. It is
+ * duplicated rather than imported because this script is plain Node with no
+ * build step and deliberately has no workspace dependency — but note that
+ * `checkConfiguration` is never called from here, so this is the only gate that
+ * runs on a backup.
+ */
+const KNOWN_PLACEHOLDERS = ["change", "changeme", "example", "placeholder", "dev-only", "secret", "password"];
+
+function rejectKey(value) {
+  if (!value) {
+    return "is not set";
+  }
+  if (value === committedPlaceholder("BACKUP_ENCRYPTION_KEY")) {
+    return "is the placeholder published in .env.example — every clone of this repository has it";
+  }
+  if (value.length < 32) {
+    return `is ${value.length} characters; at least 32 are required`;
+  }
+  if (new Set(value).size < 12) {
+    return "is a repeated pattern rather than a random value";
+  }
+  const lowered = value.toLowerCase();
+  if (KNOWN_PLACEHOLDERS.some((p) => lowered.includes(p))) {
+    return "contains a placeholder word, so it is almost certainly not a generated key";
+  }
+  return null;
+}
+
+const keyProblem = rejectKey(backupKeyRaw);
+if (keyProblem) {
   console.error(
-    "✗ BACKUP_ENCRYPTION_KEY is not set.\n\n" +
+    `✗ BACKUP_ENCRYPTION_KEY ${keyProblem}.\n\n` +
       "  A database dump is the easiest way to bypass every field-level\n" +
       "  encryption control in this product, so backups are never written in\n" +
-      "  plaintext. Generate a key and put it in .env:\n\n" +
+      "  plaintext, and never under a key anyone else can obtain. Generate one\n" +
+      "  and put it in .env — not in .env.example:\n\n" +
       "      npm run keygen\n",
   );
   process.exit(1);

@@ -15,6 +15,14 @@ export const dynamic = "force-dynamic";
  * number is large, unfamiliar to most owners, and will be challenged the first
  * time they see it. Every row can be reconciled by hand against Article 51 of
  * Federal Decree-Law 33/2021 — which is the only way it earns trust.
+ *
+ * The recipe, so "by hand" means something: count whole years from the joining
+ * date to today's date, 21 days each for the first five and 30 for each one
+ * after, pro-rate the year in progress over its own length, and multiply by
+ * monthly basic × 12 ÷ 365. `calculateGratuity` counts service in calendar
+ * anniversaries for exactly this reason — the elapsed-days ÷ 365 it used to do
+ * moved the five-year boundary earlier on every leap day, which put the register
+ * a couple of days out on round anniversaries and made the promise above false.
  */
 export default async function GratuityPage() {
   const session = await requireSession();
@@ -66,7 +74,13 @@ export default async function GratuityPage() {
   const liability = rows.reduce((t, r) => t + r.g.amount, 0);
   const provisioned = Number(provision[0]?.amount ?? 0);
   const notYetEntitled = rows.filter((r) => !r.g.entitled).length;
-  const monthlyRun = rows.reduce((t, r) => t + r.g.dailyBasicWage * (21 / 12) * 1, 0);
+  // No monthly run-rate tile here on purpose. One used to be computed at
+  // `dailyBasicWage x 21/12` for every employee and never rendered — 1.75
+  // days/month applied to staff past five years who accrue 2.5, and to staff
+  // under a year who accrue nothing. A wrong number sitting one line away from
+  // a tile gets wired to the tile eventually. If the run-rate is wanted, take
+  // it from `monthlyGratuityAccrual` — the movement between two valuation
+  // dates — which is band-aware and is what actually gets posted.
   const wpsReady = rows.filter(
     (r) => r.iban_enc && r.wps_person_id && r.wps_routing_code,
   ).length;
@@ -213,9 +227,20 @@ export default async function GratuityPage() {
         </p>
         <p className="text-2xs text-subtle mt-2 leading-relaxed">
           Under the 2021 law the old reductions for resignation were removed: an employee who
-          resigns after a year receives the same entitlement as one who is terminated. Forfeiture
-          survives only for dismissal under Article 44 (gross misconduct). Daily wage is monthly
-          basic × 12 ÷ 365 — the convention MOHRE and the courts use.
+          resigns after a year receives the same entitlement as one who is terminated. Service is
+          counted to the <strong>anniversary of the joining date</strong>, so the 21-day rate runs
+          to the fifth anniversary and 30 days a year applies only after it — a part-completed
+          year is pro-rated over its own length. Daily wage is monthly basic × 12 ÷ 365, the
+          convention MOHRE and the courts use.
+        </p>
+        <p className="text-2xs text-subtle mt-2 leading-relaxed">
+          <strong>Assumption, not confirmed law:</strong> the calculation behind these figures
+          forfeits the whole entitlement when an employee is dismissed for gross misconduct — so a
+          settlement run that way would pay nothing. That was the rule under Articles 120 and
+          139 of Federal Law 8 of 1980, which has been superseded. Article 44 of Federal
+          Decree-Law 33 of 2021 permits dismissal without notice but may not extinguish the
+          Article 51 end-of-service benefit. Open question Q-2b, with MOHRE or an employment
+          lawyer — do not rely on a zero here in a settlement without confirming it.
         </p>
       </Card>
     </div>

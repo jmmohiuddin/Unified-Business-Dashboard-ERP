@@ -15,3 +15,6 @@ backups/
 # Local agent tooling — not part of this project.
 .agents/
 superpowers/
+
+# Browser-automation debris from local agent tooling.
+.playwright-mcp/

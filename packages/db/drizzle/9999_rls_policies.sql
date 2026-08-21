@@ -8,10 +8,7 @@ ALTER TABLE "accounts" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS accounts_tenant_isolation ON "accounts";
 --> statement-breakpoint
 CREATE POLICY accounts_tenant_isolation ON "accounts"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "accounts_tenant_rls_idx" ON "accounts" (tenant_id);
@@ -23,10 +20,7 @@ ALTER TABLE "ai_conversations" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS ai_conversations_tenant_isolation ON "ai_conversations";
 --> statement-breakpoint
 CREATE POLICY ai_conversations_tenant_isolation ON "ai_conversations"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "ai_conversations_tenant_rls_idx" ON "ai_conversations" (tenant_id);
@@ -38,10 +32,7 @@ ALTER TABLE "ai_insights" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS ai_insights_tenant_isolation ON "ai_insights";
 --> statement-breakpoint
 CREATE POLICY ai_insights_tenant_isolation ON "ai_insights"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "ai_insights_tenant_rls_idx" ON "ai_insights" (tenant_id);
@@ -53,10 +44,7 @@ ALTER TABLE "ai_messages" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS ai_messages_tenant_isolation ON "ai_messages";
 --> statement-breakpoint
 CREATE POLICY ai_messages_tenant_isolation ON "ai_messages"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "ai_messages_tenant_rls_idx" ON "ai_messages" (tenant_id);
@@ -68,10 +56,7 @@ ALTER TABLE "api_tokens" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS api_tokens_tenant_isolation ON "api_tokens";
 --> statement-breakpoint
 CREATE POLICY api_tokens_tenant_isolation ON "api_tokens"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "api_tokens_tenant_rls_idx" ON "api_tokens" (tenant_id);
@@ -83,10 +68,7 @@ ALTER TABLE "appointment_services" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS appointment_services_tenant_isolation ON "appointment_services";
 --> statement-breakpoint
 CREATE POLICY appointment_services_tenant_isolation ON "appointment_services"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "appointment_services_tenant_rls_idx" ON "appointment_services" (tenant_id);
@@ -98,10 +80,7 @@ ALTER TABLE "appointments" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS appointments_tenant_isolation ON "appointments";
 --> statement-breakpoint
 CREATE POLICY appointments_tenant_isolation ON "appointments"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "appointments_tenant_rls_idx" ON "appointments" (tenant_id);
@@ -113,10 +92,7 @@ ALTER TABLE "attachments" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS attachments_tenant_isolation ON "attachments";
 --> statement-breakpoint
 CREATE POLICY attachments_tenant_isolation ON "attachments"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "attachments_tenant_rls_idx" ON "attachments" (tenant_id);
@@ -128,10 +104,7 @@ ALTER TABLE "attendance" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS attendance_tenant_isolation ON "attendance";
 --> statement-breakpoint
 CREATE POLICY attendance_tenant_isolation ON "attendance"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "attendance_tenant_rls_idx" ON "attendance" (tenant_id);
@@ -143,11 +116,14 @@ ALTER TABLE "audit_log" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS audit_log_tenant_isolation ON "audit_log";
 --> statement-breakpoint
 CREATE POLICY audit_log_tenant_isolation ON "audit_log"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          OR tenant_id IS NULL
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+DROP POLICY IF EXISTS audit_log_global_read ON "audit_log";
+--> statement-breakpoint
+CREATE POLICY audit_log_global_read ON "audit_log"
+          FOR SELECT
+          USING (tenant_id IS NULL);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "audit_log_tenant_rls_idx" ON "audit_log" (tenant_id);
 --> statement-breakpoint
@@ -158,10 +134,7 @@ ALTER TABLE "automation_runs" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS automation_runs_tenant_isolation ON "automation_runs";
 --> statement-breakpoint
 CREATE POLICY automation_runs_tenant_isolation ON "automation_runs"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "automation_runs_tenant_rls_idx" ON "automation_runs" (tenant_id);
@@ -173,10 +146,7 @@ ALTER TABLE "automations" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS automations_tenant_isolation ON "automations";
 --> statement-breakpoint
 CREATE POLICY automations_tenant_isolation ON "automations"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "automations_tenant_rls_idx" ON "automations" (tenant_id);
@@ -188,10 +158,7 @@ ALTER TABLE "bank_accounts" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bank_accounts_tenant_isolation ON "bank_accounts";
 --> statement-breakpoint
 CREATE POLICY bank_accounts_tenant_isolation ON "bank_accounts"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "bank_accounts_tenant_rls_idx" ON "bank_accounts" (tenant_id);
@@ -203,10 +170,7 @@ ALTER TABLE "bank_transactions" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS bank_transactions_tenant_isolation ON "bank_transactions";
 --> statement-breakpoint
 CREATE POLICY bank_transactions_tenant_isolation ON "bank_transactions"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "bank_transactions_tenant_rls_idx" ON "bank_transactions" (tenant_id);
@@ -218,10 +182,7 @@ ALTER TABLE "budget_lines" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS budget_lines_tenant_isolation ON "budget_lines";
 --> statement-breakpoint
 CREATE POLICY budget_lines_tenant_isolation ON "budget_lines"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "budget_lines_tenant_rls_idx" ON "budget_lines" (tenant_id);
@@ -233,10 +194,7 @@ ALTER TABLE "business_unit_modules" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS business_unit_modules_tenant_isolation ON "business_unit_modules";
 --> statement-breakpoint
 CREATE POLICY business_unit_modules_tenant_isolation ON "business_unit_modules"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "business_unit_modules_tenant_rls_idx" ON "business_unit_modules" (tenant_id);
@@ -248,10 +206,7 @@ ALTER TABLE "business_units" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS business_units_tenant_isolation ON "business_units";
 --> statement-breakpoint
 CREATE POLICY business_units_tenant_isolation ON "business_units"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "business_units_tenant_rls_idx" ON "business_units" (tenant_id);
@@ -263,10 +218,7 @@ ALTER TABLE "campaign_recipients" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS campaign_recipients_tenant_isolation ON "campaign_recipients";
 --> statement-breakpoint
 CREATE POLICY campaign_recipients_tenant_isolation ON "campaign_recipients"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "campaign_recipients_tenant_rls_idx" ON "campaign_recipients" (tenant_id);
@@ -278,10 +230,7 @@ ALTER TABLE "campaigns" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS campaigns_tenant_isolation ON "campaigns";
 --> statement-breakpoint
 CREATE POLICY campaigns_tenant_isolation ON "campaigns"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "campaigns_tenant_rls_idx" ON "campaigns" (tenant_id);
@@ -293,10 +242,7 @@ ALTER TABLE "cash_register_sessions" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS cash_register_sessions_tenant_isolation ON "cash_register_sessions";
 --> statement-breakpoint
 CREATE POLICY cash_register_sessions_tenant_isolation ON "cash_register_sessions"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cash_register_sessions_tenant_rls_idx" ON "cash_register_sessions" (tenant_id);
@@ -308,10 +254,7 @@ ALTER TABLE "cash_registers" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS cash_registers_tenant_isolation ON "cash_registers";
 --> statement-breakpoint
 CREATE POLICY cash_registers_tenant_isolation ON "cash_registers"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cash_registers_tenant_rls_idx" ON "cash_registers" (tenant_id);
@@ -323,10 +266,7 @@ ALTER TABLE "categories" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS categories_tenant_isolation ON "categories";
 --> statement-breakpoint
 CREATE POLICY categories_tenant_isolation ON "categories"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "categories_tenant_rls_idx" ON "categories" (tenant_id);
@@ -338,10 +278,7 @@ ALTER TABLE "channel_listings" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS channel_listings_tenant_isolation ON "channel_listings";
 --> statement-breakpoint
 CREATE POLICY channel_listings_tenant_isolation ON "channel_listings"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "channel_listings_tenant_rls_idx" ON "channel_listings" (tenant_id);
@@ -353,10 +290,7 @@ ALTER TABLE "channels" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS channels_tenant_isolation ON "channels";
 --> statement-breakpoint
 CREATE POLICY channels_tenant_isolation ON "channels"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "channels_tenant_rls_idx" ON "channels" (tenant_id);
@@ -368,10 +302,7 @@ ALTER TABLE "cheques" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS cheques_tenant_isolation ON "cheques";
 --> statement-breakpoint
 CREATE POLICY cheques_tenant_isolation ON "cheques"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "cheques_tenant_rls_idx" ON "cheques" (tenant_id);
@@ -383,10 +314,7 @@ ALTER TABLE "commission_entries" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS commission_entries_tenant_isolation ON "commission_entries";
 --> statement-breakpoint
 CREATE POLICY commission_entries_tenant_isolation ON "commission_entries"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "commission_entries_tenant_rls_idx" ON "commission_entries" (tenant_id);
@@ -398,10 +326,7 @@ ALTER TABLE "commission_rules" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS commission_rules_tenant_isolation ON "commission_rules";
 --> statement-breakpoint
 CREATE POLICY commission_rules_tenant_isolation ON "commission_rules"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "commission_rules_tenant_rls_idx" ON "commission_rules" (tenant_id);
@@ -413,10 +338,7 @@ ALTER TABLE "communication_consents" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS communication_consents_tenant_isolation ON "communication_consents";
 --> statement-breakpoint
 CREATE POLICY communication_consents_tenant_isolation ON "communication_consents"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "communication_consents_tenant_rls_idx" ON "communication_consents" (tenant_id);
@@ -428,10 +350,7 @@ ALTER TABLE "document_extractions" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS document_extractions_tenant_isolation ON "document_extractions";
 --> statement-breakpoint
 CREATE POLICY document_extractions_tenant_isolation ON "document_extractions"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "document_extractions_tenant_rls_idx" ON "document_extractions" (tenant_id);
@@ -443,10 +362,7 @@ ALTER TABLE "document_lines" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS document_lines_tenant_isolation ON "document_lines";
 --> statement-breakpoint
 CREATE POLICY document_lines_tenant_isolation ON "document_lines"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "document_lines_tenant_rls_idx" ON "document_lines" (tenant_id);
@@ -458,10 +374,7 @@ ALTER TABLE "documents" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS documents_tenant_isolation ON "documents";
 --> statement-breakpoint
 CREATE POLICY documents_tenant_isolation ON "documents"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "documents_tenant_rls_idx" ON "documents" (tenant_id);
@@ -473,10 +386,7 @@ ALTER TABLE "employee_assignments" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS employee_assignments_tenant_isolation ON "employee_assignments";
 --> statement-breakpoint
 CREATE POLICY employee_assignments_tenant_isolation ON "employee_assignments"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "employee_assignments_tenant_rls_idx" ON "employee_assignments" (tenant_id);
@@ -488,10 +398,7 @@ ALTER TABLE "employees" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS employees_tenant_isolation ON "employees";
 --> statement-breakpoint
 CREATE POLICY employees_tenant_isolation ON "employees"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "employees_tenant_rls_idx" ON "employees" (tenant_id);
@@ -503,10 +410,7 @@ ALTER TABLE "exchange_rates" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS exchange_rates_tenant_isolation ON "exchange_rates";
 --> statement-breakpoint
 CREATE POLICY exchange_rates_tenant_isolation ON "exchange_rates"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "exchange_rates_tenant_rls_idx" ON "exchange_rates" (tenant_id);
@@ -518,10 +422,7 @@ ALTER TABLE "fiscal_periods" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fiscal_periods_tenant_isolation ON "fiscal_periods";
 --> statement-breakpoint
 CREATE POLICY fiscal_periods_tenant_isolation ON "fiscal_periods"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "fiscal_periods_tenant_rls_idx" ON "fiscal_periods" (tenant_id);
@@ -533,10 +434,7 @@ ALTER TABLE "fulfilments" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS fulfilments_tenant_isolation ON "fulfilments";
 --> statement-breakpoint
 CREATE POLICY fulfilments_tenant_isolation ON "fulfilments"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "fulfilments_tenant_rls_idx" ON "fulfilments" (tenant_id);
@@ -548,10 +446,7 @@ ALTER TABLE "idempotency_keys" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS idempotency_keys_tenant_isolation ON "idempotency_keys";
 --> statement-breakpoint
 CREATE POLICY idempotency_keys_tenant_isolation ON "idempotency_keys"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "idempotency_keys_tenant_rls_idx" ON "idempotency_keys" (tenant_id);
@@ -563,10 +458,7 @@ ALTER TABLE "installment_plans" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS installment_plans_tenant_isolation ON "installment_plans";
 --> statement-breakpoint
 CREATE POLICY installment_plans_tenant_isolation ON "installment_plans"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "installment_plans_tenant_rls_idx" ON "installment_plans" (tenant_id);
@@ -578,10 +470,7 @@ ALTER TABLE "installments" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS installments_tenant_isolation ON "installments";
 --> statement-breakpoint
 CREATE POLICY installments_tenant_isolation ON "installments"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "installments_tenant_rls_idx" ON "installments" (tenant_id);
@@ -593,10 +482,7 @@ ALTER TABLE "interactions" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS interactions_tenant_isolation ON "interactions";
 --> statement-breakpoint
 CREATE POLICY interactions_tenant_isolation ON "interactions"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "interactions_tenant_rls_idx" ON "interactions" (tenant_id);
@@ -608,10 +494,7 @@ ALTER TABLE "item_components" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS item_components_tenant_isolation ON "item_components";
 --> statement-breakpoint
 CREATE POLICY item_components_tenant_isolation ON "item_components"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "item_components_tenant_rls_idx" ON "item_components" (tenant_id);
@@ -623,10 +506,7 @@ ALTER TABLE "item_variants" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS item_variants_tenant_isolation ON "item_variants";
 --> statement-breakpoint
 CREATE POLICY item_variants_tenant_isolation ON "item_variants"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "item_variants_tenant_rls_idx" ON "item_variants" (tenant_id);
@@ -638,10 +518,7 @@ ALTER TABLE "items" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS items_tenant_isolation ON "items";
 --> statement-breakpoint
 CREATE POLICY items_tenant_isolation ON "items"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "items_tenant_rls_idx" ON "items" (tenant_id);
@@ -653,10 +530,7 @@ ALTER TABLE "job_lines" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS job_lines_tenant_isolation ON "job_lines";
 --> statement-breakpoint
 CREATE POLICY job_lines_tenant_isolation ON "job_lines"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "job_lines_tenant_rls_idx" ON "job_lines" (tenant_id);
@@ -668,10 +542,7 @@ ALTER TABLE "job_photos" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS job_photos_tenant_isolation ON "job_photos";
 --> statement-breakpoint
 CREATE POLICY job_photos_tenant_isolation ON "job_photos"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "job_photos_tenant_rls_idx" ON "job_photos" (tenant_id);
@@ -683,10 +554,7 @@ ALTER TABLE "job_visits" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS job_visits_tenant_isolation ON "job_visits";
 --> statement-breakpoint
 CREATE POLICY job_visits_tenant_isolation ON "job_visits"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "job_visits_tenant_rls_idx" ON "job_visits" (tenant_id);
@@ -698,10 +566,7 @@ ALTER TABLE "jobs" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS jobs_tenant_isolation ON "jobs";
 --> statement-breakpoint
 CREATE POLICY jobs_tenant_isolation ON "jobs"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "jobs_tenant_rls_idx" ON "jobs" (tenant_id);
@@ -713,10 +578,7 @@ ALTER TABLE "journal_lines" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS journal_lines_tenant_isolation ON "journal_lines";
 --> statement-breakpoint
 CREATE POLICY journal_lines_tenant_isolation ON "journal_lines"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "journal_lines_tenant_rls_idx" ON "journal_lines" (tenant_id);
@@ -728,10 +590,7 @@ ALTER TABLE "journals" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS journals_tenant_isolation ON "journals";
 --> statement-breakpoint
 CREATE POLICY journals_tenant_isolation ON "journals"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "journals_tenant_rls_idx" ON "journals" (tenant_id);
@@ -743,10 +602,7 @@ ALTER TABLE "kpi_snapshots" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS kpi_snapshots_tenant_isolation ON "kpi_snapshots";
 --> statement-breakpoint
 CREATE POLICY kpi_snapshots_tenant_isolation ON "kpi_snapshots"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "kpi_snapshots_tenant_rls_idx" ON "kpi_snapshots" (tenant_id);
@@ -758,10 +614,7 @@ ALTER TABLE "leads" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS leads_tenant_isolation ON "leads";
 --> statement-breakpoint
 CREATE POLICY leads_tenant_isolation ON "leads"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "leads_tenant_rls_idx" ON "leads" (tenant_id);
@@ -773,10 +626,7 @@ ALTER TABLE "lease_charges" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS lease_charges_tenant_isolation ON "lease_charges";
 --> statement-breakpoint
 CREATE POLICY lease_charges_tenant_isolation ON "lease_charges"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "lease_charges_tenant_rls_idx" ON "lease_charges" (tenant_id);
@@ -788,10 +638,7 @@ ALTER TABLE "leases" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS leases_tenant_isolation ON "leases";
 --> statement-breakpoint
 CREATE POLICY leases_tenant_isolation ON "leases"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "leases_tenant_rls_idx" ON "leases" (tenant_id);
@@ -803,10 +650,7 @@ ALTER TABLE "leave_requests" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS leave_requests_tenant_isolation ON "leave_requests";
 --> statement-breakpoint
 CREATE POLICY leave_requests_tenant_isolation ON "leave_requests"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "leave_requests_tenant_rls_idx" ON "leave_requests" (tenant_id);
@@ -818,10 +662,7 @@ ALTER TABLE "locations" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS locations_tenant_isolation ON "locations";
 --> statement-breakpoint
 CREATE POLICY locations_tenant_isolation ON "locations"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "locations_tenant_rls_idx" ON "locations" (tenant_id);
@@ -833,10 +674,7 @@ ALTER TABLE "membership_plans" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS membership_plans_tenant_isolation ON "membership_plans";
 --> statement-breakpoint
 CREATE POLICY membership_plans_tenant_isolation ON "membership_plans"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "membership_plans_tenant_rls_idx" ON "membership_plans" (tenant_id);
@@ -848,10 +686,7 @@ ALTER TABLE "membership_scopes" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS membership_scopes_tenant_isolation ON "membership_scopes";
 --> statement-breakpoint
 CREATE POLICY membership_scopes_tenant_isolation ON "membership_scopes"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "membership_scopes_tenant_rls_idx" ON "membership_scopes" (tenant_id);
@@ -863,10 +698,7 @@ ALTER TABLE "memberships" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS memberships_tenant_isolation ON "memberships";
 --> statement-breakpoint
 CREATE POLICY memberships_tenant_isolation ON "memberships"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "memberships_tenant_rls_idx" ON "memberships" (tenant_id);
@@ -878,10 +710,7 @@ ALTER TABLE "meter_readings" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS meter_readings_tenant_isolation ON "meter_readings";
 --> statement-breakpoint
 CREATE POLICY meter_readings_tenant_isolation ON "meter_readings"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "meter_readings_tenant_rls_idx" ON "meter_readings" (tenant_id);
@@ -893,10 +722,7 @@ ALTER TABLE "notifications" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS notifications_tenant_isolation ON "notifications";
 --> statement-breakpoint
 CREATE POLICY notifications_tenant_isolation ON "notifications"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "notifications_tenant_rls_idx" ON "notifications" (tenant_id);
@@ -908,10 +734,7 @@ ALTER TABLE "number_series" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS number_series_tenant_isolation ON "number_series";
 --> statement-breakpoint
 CREATE POLICY number_series_tenant_isolation ON "number_series"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "number_series_tenant_rls_idx" ON "number_series" (tenant_id);
@@ -923,10 +746,7 @@ ALTER TABLE "parties" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS parties_tenant_isolation ON "parties";
 --> statement-breakpoint
 CREATE POLICY parties_tenant_isolation ON "parties"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "parties_tenant_rls_idx" ON "parties" (tenant_id);
@@ -938,10 +758,7 @@ ALTER TABLE "party_business_units" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS party_business_units_tenant_isolation ON "party_business_units";
 --> statement-breakpoint
 CREATE POLICY party_business_units_tenant_isolation ON "party_business_units"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "party_business_units_tenant_rls_idx" ON "party_business_units" (tenant_id);
@@ -953,10 +770,7 @@ ALTER TABLE "party_contacts" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS party_contacts_tenant_isolation ON "party_contacts";
 --> statement-breakpoint
 CREATE POLICY party_contacts_tenant_isolation ON "party_contacts"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "party_contacts_tenant_rls_idx" ON "party_contacts" (tenant_id);
@@ -968,10 +782,7 @@ ALTER TABLE "party_memberships" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS party_memberships_tenant_isolation ON "party_memberships";
 --> statement-breakpoint
 CREATE POLICY party_memberships_tenant_isolation ON "party_memberships"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "party_memberships_tenant_rls_idx" ON "party_memberships" (tenant_id);
@@ -983,10 +794,7 @@ ALTER TABLE "payment_allocations" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS payment_allocations_tenant_isolation ON "payment_allocations";
 --> statement-breakpoint
 CREATE POLICY payment_allocations_tenant_isolation ON "payment_allocations"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "payment_allocations_tenant_rls_idx" ON "payment_allocations" (tenant_id);
@@ -998,10 +806,7 @@ ALTER TABLE "payments" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS payments_tenant_isolation ON "payments";
 --> statement-breakpoint
 CREATE POLICY payments_tenant_isolation ON "payments"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "payments_tenant_rls_idx" ON "payments" (tenant_id);
@@ -1013,10 +818,7 @@ ALTER TABLE "payroll_runs" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS payroll_runs_tenant_isolation ON "payroll_runs";
 --> statement-breakpoint
 CREATE POLICY payroll_runs_tenant_isolation ON "payroll_runs"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "payroll_runs_tenant_rls_idx" ON "payroll_runs" (tenant_id);
@@ -1028,10 +830,7 @@ ALTER TABLE "payslips" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS payslips_tenant_isolation ON "payslips";
 --> statement-breakpoint
 CREATE POLICY payslips_tenant_isolation ON "payslips"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "payslips_tenant_rls_idx" ON "payslips" (tenant_id);
@@ -1043,10 +842,7 @@ ALTER TABLE "posting_rules" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS posting_rules_tenant_isolation ON "posting_rules";
 --> statement-breakpoint
 CREATE POLICY posting_rules_tenant_isolation ON "posting_rules"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "posting_rules_tenant_rls_idx" ON "posting_rules" (tenant_id);
@@ -1058,10 +854,7 @@ ALTER TABLE "price_list_entries" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS price_list_entries_tenant_isolation ON "price_list_entries";
 --> statement-breakpoint
 CREATE POLICY price_list_entries_tenant_isolation ON "price_list_entries"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "price_list_entries_tenant_rls_idx" ON "price_list_entries" (tenant_id);
@@ -1073,10 +866,7 @@ ALTER TABLE "price_lists" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS price_lists_tenant_isolation ON "price_lists";
 --> statement-breakpoint
 CREATE POLICY price_lists_tenant_isolation ON "price_lists"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "price_lists_tenant_rls_idx" ON "price_lists" (tenant_id);
@@ -1088,10 +878,7 @@ ALTER TABLE "projects" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS projects_tenant_isolation ON "projects";
 --> statement-breakpoint
 CREATE POLICY projects_tenant_isolation ON "projects"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "projects_tenant_rls_idx" ON "projects" (tenant_id);
@@ -1103,10 +890,7 @@ ALTER TABLE "resources" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS resources_tenant_isolation ON "resources";
 --> statement-breakpoint
 CREATE POLICY resources_tenant_isolation ON "resources"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "resources_tenant_rls_idx" ON "resources" (tenant_id);
@@ -1118,11 +902,14 @@ ALTER TABLE "roles" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS roles_tenant_isolation ON "roles";
 --> statement-breakpoint
 CREATE POLICY roles_tenant_isolation ON "roles"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          OR tenant_id IS NULL
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+--> statement-breakpoint
+DROP POLICY IF EXISTS roles_global_read ON "roles";
+--> statement-breakpoint
+CREATE POLICY roles_global_read ON "roles"
+          FOR SELECT
+          USING (tenant_id IS NULL);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "roles_tenant_rls_idx" ON "roles" (tenant_id);
 --> statement-breakpoint
@@ -1133,10 +920,7 @@ ALTER TABLE "salary_advances" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS salary_advances_tenant_isolation ON "salary_advances";
 --> statement-breakpoint
 CREATE POLICY salary_advances_tenant_isolation ON "salary_advances"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "salary_advances_tenant_rls_idx" ON "salary_advances" (tenant_id);
@@ -1148,10 +932,7 @@ ALTER TABLE "saved_views" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS saved_views_tenant_isolation ON "saved_views";
 --> statement-breakpoint
 CREATE POLICY saved_views_tenant_isolation ON "saved_views"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "saved_views_tenant_rls_idx" ON "saved_views" (tenant_id);
@@ -1163,10 +944,7 @@ ALTER TABLE "serial_units" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS serial_units_tenant_isolation ON "serial_units";
 --> statement-breakpoint
 CREATE POLICY serial_units_tenant_isolation ON "serial_units"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "serial_units_tenant_rls_idx" ON "serial_units" (tenant_id);
@@ -1178,10 +956,7 @@ ALTER TABLE "service_contracts" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS service_contracts_tenant_isolation ON "service_contracts";
 --> statement-breakpoint
 CREATE POLICY service_contracts_tenant_isolation ON "service_contracts"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "service_contracts_tenant_rls_idx" ON "service_contracts" (tenant_id);
@@ -1193,10 +968,7 @@ ALTER TABLE "sites" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS sites_tenant_isolation ON "sites";
 --> statement-breakpoint
 CREATE POLICY sites_tenant_isolation ON "sites"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "sites_tenant_rls_idx" ON "sites" (tenant_id);
@@ -1208,10 +980,7 @@ ALTER TABLE "staff_schedules" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS staff_schedules_tenant_isolation ON "staff_schedules";
 --> statement-breakpoint
 CREATE POLICY staff_schedules_tenant_isolation ON "staff_schedules"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "staff_schedules_tenant_rls_idx" ON "staff_schedules" (tenant_id);
@@ -1223,10 +992,7 @@ ALTER TABLE "stock_count_lines" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS stock_count_lines_tenant_isolation ON "stock_count_lines";
 --> statement-breakpoint
 CREATE POLICY stock_count_lines_tenant_isolation ON "stock_count_lines"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "stock_count_lines_tenant_rls_idx" ON "stock_count_lines" (tenant_id);
@@ -1238,10 +1004,7 @@ ALTER TABLE "stock_counts" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS stock_counts_tenant_isolation ON "stock_counts";
 --> statement-breakpoint
 CREATE POLICY stock_counts_tenant_isolation ON "stock_counts"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "stock_counts_tenant_rls_idx" ON "stock_counts" (tenant_id);
@@ -1253,10 +1016,7 @@ ALTER TABLE "stock_levels" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS stock_levels_tenant_isolation ON "stock_levels";
 --> statement-breakpoint
 CREATE POLICY stock_levels_tenant_isolation ON "stock_levels"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "stock_levels_tenant_rls_idx" ON "stock_levels" (tenant_id);
@@ -1268,10 +1028,7 @@ ALTER TABLE "stock_moves" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS stock_moves_tenant_isolation ON "stock_moves";
 --> statement-breakpoint
 CREATE POLICY stock_moves_tenant_isolation ON "stock_moves"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "stock_moves_tenant_rls_idx" ON "stock_moves" (tenant_id);
@@ -1283,10 +1040,7 @@ ALTER TABLE "supplier_profiles" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS supplier_profiles_tenant_isolation ON "supplier_profiles";
 --> statement-breakpoint
 CREATE POLICY supplier_profiles_tenant_isolation ON "supplier_profiles"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "supplier_profiles_tenant_rls_idx" ON "supplier_profiles" (tenant_id);
@@ -1298,10 +1052,7 @@ ALTER TABLE "tax_codes" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tax_codes_tenant_isolation ON "tax_codes";
 --> statement-breakpoint
 CREATE POLICY tax_codes_tenant_isolation ON "tax_codes"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "tax_codes_tenant_rls_idx" ON "tax_codes" (tenant_id);
@@ -1313,10 +1064,7 @@ ALTER TABLE "units" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS units_tenant_isolation ON "units";
 --> statement-breakpoint
 CREATE POLICY units_tenant_isolation ON "units"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "units_tenant_rls_idx" ON "units" (tenant_id);
@@ -1328,10 +1076,7 @@ ALTER TABLE "warehouses" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS warehouses_tenant_isolation ON "warehouses";
 --> statement-breakpoint
 CREATE POLICY warehouses_tenant_isolation ON "warehouses"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "warehouses_tenant_rls_idx" ON "warehouses" (tenant_id);

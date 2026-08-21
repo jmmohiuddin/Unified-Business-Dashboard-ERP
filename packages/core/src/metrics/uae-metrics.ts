@@ -49,16 +49,36 @@ const vatReturnPosition = defineMetric({
   aiExposed: true,
   async run(ctx) {
     const from = quarterStart(ctx.today);
+    // Credit notes belong in the return, signed negative.
+    //
+    // `createCreditNote` stores its lines with POSITIVE quantities and totals
+    // and expresses the reversal in the ledger instead — it debits VAT_OUTPUT
+    // (services/credit-notes.ts). So a return filtered to `doc_type = 'invoice'`
+    // reports supplies and output VAT that the GL has already reversed: the
+    // VAT201 and the VAT_OUTPUT balance disagree by exactly the credited VAT,
+    // and the owner over-pays the FTA on a return that then fails
+    // reconciliation on inspection. The sign has to be applied here because it
+    // is not in the stored rows.
+    //
+    // Caveat the accountant should know about: `createCreditNote` does not copy
+    // `tax_code_id` onto its lines (every one of the 5,657 line rows carrying a
+    // tax code today is an invoice line), so the COALESCE below files a credit
+    // note under 'standard' whatever it reverses. Output VAT is still right —
+    // an exempt line carries no tax — but a credit note against residential
+    // rent would come off box 1 instead of box 5. Fixing that belongs in the
+    // credit-note service, not in this query.
     const rows = await ctx.tx.execute<{
       treatment: string; net: string; vat: string;
     }>(sql`
       SELECT COALESCE(tc.treatment::text, 'standard') AS treatment,
-             SUM(dl.line_total - dl.tax_amount) AS net,
-             SUM(dl.tax_amount) AS vat
+             SUM((dl.line_total - dl.tax_amount)
+                 * CASE WHEN d.doc_type = 'credit_note' THEN -1 ELSE 1 END) AS net,
+             SUM(dl.tax_amount
+                 * CASE WHEN d.doc_type = 'credit_note' THEN -1 ELSE 1 END) AS vat
         FROM document_lines dl
         JOIN documents d ON d.id = dl.document_id
         LEFT JOIN tax_codes tc ON tc.id = dl.tax_code_id
-       WHERE d.doc_type = 'invoice' AND d.direction = 'in'
+       WHERE d.doc_type IN ('invoice','credit_note') AND d.direction = 'in'
          AND d.status NOT IN ('cancelled','void','draft')
          AND d.issue_date BETWEEN ${from}::date AND ${ctx.today}::date
        GROUP BY 1
@@ -94,6 +114,16 @@ const vatReturnPosition = defineMetric({
       exemptSupplies: exempt.net,
       reverseChargeSupplies: rc.net,
       directlyAttributableInput: num(inputs[0]?.recoverable),
+      // PENDING, not intent. `receiveBill` currently classifies every input VAT
+      // line as wholly recoverable or wholly irrecoverable from the business
+      // unit's kind, so nothing in the database is a residual and there is
+      // nothing to read here yet. Until the residual bucket lands upstream this
+      // zero means "no residual pool exists", not "the residual is nil" — with
+      // the consequence that the apportionment engine below never restricts
+      // anything and the "Input recovery ratio %" in the breakdown is derived
+      // from a zero. Wire this to the residual account once the purchasing side
+      // publishes its read contract; do not remove the zero before then, because
+      // a wrong residual is worse than a visible gap.
       residualInput: 0,
       exemptAttributableInput: num(inputs[0]?.irrecoverable),
     });
@@ -152,6 +182,12 @@ const corporateTaxEstimate = defineMetric({
     const revenue = num(rows[0]?.revenue);
     const profit = num(rows[0]?.profit);
 
+    // `priorPeriodRevenues` is deliberately not passed, and that is a known gap
+    // rather than a claim: FR-C04 tests relief against the current AND all
+    // prior periods, so omitting the history asserts this is a first tax
+    // period. Supplying it needs the same rework as assessing relief per
+    // taxable person instead of group-wide, which this single ungrouped query
+    // does not do either. Both belong in one change, not this one.
     const result = calculateCorporateTax({
       accountingProfit: profit,
       revenue,

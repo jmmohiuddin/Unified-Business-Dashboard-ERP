@@ -31,6 +31,22 @@ const GUARDED = [
 /** The test harness asserts against plain numbers by design. */
 const EXEMPT = new Set(["test.ts"]);
 
+/**
+ * Line-level escape hatch: `// money-guard-ignore: <reason>`.
+ *
+ * The rules below are deliberately blunt greps — `Number(` anywhere under
+ * `services/` is a violation — because that bluntness is what makes them hard
+ * to erode. But `services/` also holds code that parses things which are not
+ * money at all (a role rank, a row count), and the honest fix there is neither
+ * to launder the call into `parseInt` nor to add the whole file to EXEMPT,
+ * which would blind the guard to every future money bug in it.
+ *
+ * So: exempt the single line, in the open, with a stated reason. A reason is
+ * mandatory — a bare pragma does not suppress anything. Every use is one grep
+ * away and has to survive review, which is the property EXEMPT lacks.
+ */
+const IGNORE = /\/\/\s*money-guard-ignore:\s*\S/;
+
 const RULES = [
   {
     // `Number(` but not `M.toNumber(` / `.toNumber(` / `toNumber(`.
@@ -72,16 +88,25 @@ function stripComments(src) {
 }
 
 let violations = 0;
+let ignored = 0;
 for (const dir of GUARDED) {
   for (const file of walk(dir)) {
     const name = file.split("/").pop();
     if (EXEMPT.has(name)) continue;
 
-    const lines = stripComments(readFileSync(file, "utf8")).split("\n");
+    const source = readFileSync(file, "utf8");
+    // The pragma has to be read off the raw line: stripComments blanks it out
+    // before the rules ever see it.
+    const raw = source.split("\n");
+    const lines = stripComments(source).split("\n");
     lines.forEach((line, i) => {
       for (const rule of RULES) {
         rule.pattern.lastIndex = 0;
         if (rule.pattern.test(line)) {
+          if (IGNORE.test(raw[i])) {
+            ignored++;
+            return;
+          }
           violations++;
           console.error(`  ✗ ${file}:${i + 1}\n      ${rule.message}\n      ${line.trim()}`);
         }
@@ -94,4 +119,5 @@ if (violations > 0) {
   console.error(`\n✗ ${violations} money-path violation(s).\n`);
   process.exit(1);
 }
-console.log(`✓ No float arithmetic on money paths (${GUARDED.join(", ")}).`);
+const suffix = ignored > 0 ? ` ${ignored} line(s) explicitly ignored.` : "";
+console.log(`✓ No float arithmetic on money paths (${GUARDED.join(", ")}).${suffix}`);

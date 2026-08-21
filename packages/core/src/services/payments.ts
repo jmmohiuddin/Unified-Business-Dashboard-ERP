@@ -102,6 +102,20 @@ export async function recordPayment(
       }
     }
 
+    // Fold duplicate targets before anything reads a balance. The validation
+    // below re-reads `amount_due` per target from a row no earlier target has
+    // updated yet, so two lines naming the same invoice would each be checked
+    // against the same untouched balance and both would pass — splitting an
+    // over-allocation across lines and producing exactly the negative balance
+    // the guard below exists to make impossible. Folding first means one lock,
+    // one check and one allocation row per invoice, whatever the caller sent.
+    const folded = new Map<string, M.Money>();
+    for (const t of targets) {
+      const prior = folded.get(t.documentId);
+      folded.set(t.documentId, prior ? M.add(prior, t.amount) : t.amount);
+    }
+    targets = [...folded].map(([documentId, amount]) => ({ documentId, amount }));
+
     // ── Validate every allocation before writing anything ───────────────────
     const settled: RecordPaymentResult["settledInvoices"] = [];
     let allocatedTotal = M.ZERO;
@@ -257,17 +271,19 @@ export async function recordPayment(
 
 export const chequeTransitionInput = z.object({
   chequeId: z.uuid(),
-  action: z.enum(["deposit", "clear", "bounce", "replace"]),
+  action: z.enum(["deposit", "clear", "bounce", "replace", "return", "cancel"]),
   onDate: z.iso.date(),
   bounceReason: z.string().max(200).optional(),
   bankCharge: z.number().min(0).max(10_000).default(0),
+  /** Why the instrument was handed back or voided — for `return` and `cancel`. */
+  reason: z.string().max(200).optional(),
   /** For `replace`: the new cheque handed over by the tenant. */
   replacement: z
     .object({
       chequeNumber: z.string().min(1).max(40),
       bankName: z.string().max(120).optional(),
       chequeDate: z.iso.date(),
-      amount: z.number().positive(),
+      amount: z.number().positive().max(100_000_000),
     })
     .optional(),
   idempotencyKey: z.string().min(8).max(120).optional(),
@@ -279,6 +295,16 @@ export const chequeTransitionInput = z.object({
  * `clear` is the one that touches money: it creates a real payment allocated
  * across the invoices for the period the cheque covers, so the accrual ledger
  * and the physical instrument stay reconciled.
+ *
+ * `return` and `cancel` exist because `cheque_status` declares `returned` and
+ * `cancelled` and nothing used to reach them. They are implemented rather than
+ * dropped from the enum: both are real events in a UAE PDC portfolio — a
+ * tenant who settles early or ends a lease takes the unbanked cheques back,
+ * and a cheque captured with the wrong number or amount has to be voided
+ * without pretending it bounced. Dropping them would need a migration *and*
+ * would leave the operator with no honest way to record either, forcing the
+ * lie. Neither touches money: an unbanked instrument was never a receipt, and
+ * the invoices it was written against stay exactly as open as they were.
  */
 export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
   const input = chequeTransitionInput.parse(raw);
@@ -300,11 +326,28 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
 
     // Guard the state machine explicitly. Clearing an already-cleared cheque
     // would double-count the receipt.
+    //
+    // `cleared` appears in no source list, so a cleared cheque is terminal.
+    // That is deliberate and it is *parked*, not settled: whether a cleared UAE
+    // cheque can later be returned by the bank is open question Q-5 with the
+    // group's bank, and PRD B7 records the state as unreachable until it is
+    // answered. Do not add `cleared` to `bounce` (or to any list) to "tidy up"
+    // the gap — reversing a cleared cheque has to unwind the payment, its
+    // allocations and its journal, and none of that can be designed before the
+    // bank says whether the case exists.
     const allowed: Record<string, string[]> = {
       deposit: ["held"],
       clear: ["held", "deposited"],
       bounce: ["deposited", "held"],
-      replace: ["bounced"],
+      // From `bounced` this is the replacement chain. From `held` it is a
+      // renegotiation, which the `replaced` enum comment has always described
+      // but the guard refused — leaving a re-signed tenancy with no way to swap
+      // the old cheques out except by falsely bouncing them first.
+      replace: ["bounced", "held"],
+      // Only from `held`: once an instrument is with the bank the drawer cannot
+      // be handed it back, and a bounced cheque is kept as evidence of the debt.
+      return: ["held"],
+      cancel: ["held"],
     };
     if (!allowed[input.action]!.includes(cheque.status)) {
       throw new ServiceError(
@@ -400,6 +443,23 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
       if (!input.replacement) {
         throw new ServiceError("A replacement cheque is required.", "invalid");
       }
+      // Swapping the instrument does not shrink the obligation behind it, so a
+      // replacement may not be worth less than the cheque it replaces. Without
+      // this a bounced AED 30,000 cheque could be replaced by an AED 300 one
+      // and the cheque register would show the period as covered. Larger is
+      // allowed and safe: the tenant rolling the bank charge or an arrears
+      // catch-up into the new cheque is normal, and on `clear` the excess is
+      // routed to CUSTOMER_ADVANCE rather than over-allocated. A genuinely
+      // *reduced* obligation is a lease amendment, not an instrument swap —
+      // cancel the old schedule and issue a new one.
+      const replacementAmount = M.money(input.replacement.amount);
+      if (M.lt(replacementAmount, chequeAmount)) {
+        throw new ServiceError(
+          `A replacement cheque must cover at least ${M.toDisplay(chequeAmount)} — ` +
+            `${M.toDisplay(replacementAmount)} would leave the period short.`,
+          "invalid",
+        );
+      }
       await ctx.tx.execute(sql`
         INSERT INTO cheques
           (id, tenant_id, business_unit_id, direction, party_id, lease_id, cheque_number,
@@ -409,12 +469,37 @@ export async function transitionCheque(ctx: ServiceContext, raw: unknown) {
           (gen_random_uuid(), ${ctx.tenantId}::uuid, ${cheque.business_unit_id}::uuid, 'in',
            ${cheque.party_id}::uuid, ${cheque.lease_id}::uuid, ${input.replacement.chequeNumber},
            ${input.replacement.bankName ?? cheque.bank_name},
-           ${input.replacement.chequeDate}::date, ${M.toDb(M.money(input.replacement.amount))},
+           ${input.replacement.chequeDate}::date, ${M.toDb(replacementAmount)},
            ${ctx.baseCurrency}, 'held', ${cheque.period_start}::date, ${cheque.period_end}::date,
            ${input.onDate}::date, ${cheque.id}::uuid, 'Head office safe')
       `);
       await ctx.tx.execute(sql`
         UPDATE cheques SET status = 'replaced', updated_at = now()
+         WHERE id = ${cheque.id}::uuid
+      `);
+    }
+
+    if (input.action === "return" || input.action === "cancel") {
+      // Both are terminal and neither posts: the cheque never reached the bank,
+      // so there is nothing to reverse. What must survive is *why* and *when*,
+      // and the table has no `returned_on`/`cancelled_on` column — adding one
+      // would be a migration for a field only ever read as prose. So the date
+      // and reason go into `notes` (appended, never overwriting an existing
+      // note) and the structured record lives in the audit row below.
+      const status = input.action === "return" ? "returned" : "cancelled";
+      const note = input.action === "return"
+        ? `Returned to the drawer on ${input.onDate}`
+        : `Cancelled on ${input.onDate}`;
+      await ctx.tx.execute(sql`
+        UPDATE cheques
+           SET status = ${status}::cheque_status,
+               notes = concat_ws(E'\n', nullif(notes, ''),
+                                 ${input.reason ? `${note} — ${input.reason}` : `${note}.`}::text),
+               -- The instrument leaves our custody on a return; on a cancel it
+               -- is void wherever it physically is.
+               custody_location = CASE WHEN ${input.action}::text = 'return'
+                 THEN 'Returned to drawer' ELSE custody_location END,
+               updated_at = now()
          WHERE id = ${cheque.id}::uuid
       `);
     }

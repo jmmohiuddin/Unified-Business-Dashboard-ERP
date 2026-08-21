@@ -106,7 +106,13 @@ export async function revokeAllSessions(
   return rows[0]?.n ?? 0;
 }
 
-/** Housekeeping for the nightly job — expired rows are not evidence. */
+/**
+ * Housekeeping — called nightly by `/api/cron/maintenance`. Expired rows are
+ * not evidence: a session that lapsed a year ago proves nothing about who was
+ * logged in, and keeping it only widens what a table dump would expose. Revoked
+ * but unexpired rows are deliberately left alone — those still answer "was this
+ * token cancelled?" for as long as the token could have been presented.
+ */
 export async function pruneExpiredSessions(olderThanDays = 30): Promise<number> {
   const rows = await withoutTenant((db) =>
     db.execute<{ n: number }>(sql`

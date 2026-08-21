@@ -23,7 +23,30 @@
  *     a touch of the accent hue, and semantic colours are re-tuned for contrast
  *     on dark rather than reused.
  *
- *  All pairs meet WCAG 2.2 AA (4.5:1 for text, 3:1 for large text and UI).
+ * CONTRAST — measured, not asserted.
+ *
+ *  Every figure quoted in this file was computed: each oklch token converted to
+ *  sRGB (clamping out-of-gamut channels the way a browser does before it paints)
+ *  and run through the WCAG 2.x relative-luminance formula, against each surface
+ *  the token is actually painted on — `--bg`, `--surface` and `--surface-2`, the
+ *  last being the row-hover background used in eleven places.
+ *
+ *  Every text token clears 4.5:1 on all three, in both themes. `--border-strong` —
+ *  the visual boundary of every input in the product — clears 3:1 per WCAG 1.4.11.
+ *  Both chip pairs and both filled buttons clear 4.5:1; the focus ring clears 3:1.
+ *
+ *  The residual gap is recorded here rather than hidden. Against `--surface-3` in
+ *  the LIGHT theme only, four tokens fall marginally short: `--text-subtle` 4.31,
+ *  `--positive` 4.33, `--caution` 4.39 and `--border-strong` 2.98. Nothing in the
+ *  product paints text or an input on `--surface-3` today — it exists as the middle
+ *  stop of the skeleton shimmer and nothing else — so this is latent, not live. If
+ *  a surface-3 panel ever gains text, these four have to move again.
+ *
+ *  This block used to claim "all pairs meet WCAG 2.2 AA" while `--text-subtle` —
+ *  the colour of essentially every 11px meta line in the product — measured
+ *  3.64:1 in light and 4.49:1 in dark. A false compliance claim is worse than no
+ *  claim, because it tells the next reader not to check. If you change a colour,
+ *  re-measure it and update the numbers above.
  */
 
 @theme {
@@ -61,6 +84,98 @@
   --color-bu-slate: oklch(55% 0.03 260);
 }
 
+/**
+ * ── Semantic colour bridge ────────────────────────────────────────────────
+ *
+ * This block exists to make variants work, and it is not optional decoration.
+ *
+ * The semantic tokens below live on plain `:root` so they can be re-declared per
+ * theme — a value inside `@theme` is static and cannot vary. But a colour that
+ * Tailwind v4 does not know about in its `--color-*` namespace has no *utility
+ * definition*, and a class hand-written into `@layer utilities` is just CSS
+ * dropped into the utilities cascade layer. The engine will happily emit
+ * `.bg-surface-2` because you typed it — and will emit nothing at all for
+ * `hover:bg-surface-2`, because there is no utility for the variant to compose
+ * onto.
+ *
+ * That is not hypothetical. Before this block existed, every row-level hover
+ * affordance in the product was silently inert: all sidebar nav links, the
+ * business-unit list, the account block, the bell row, every row of the
+ * dashboard exception list, every clickable KpiTile, every clickable BarRow,
+ * every DataTable row, the receivables table and the login account picker. They
+ * all carried `transition-colors` for a transition that could never fire.
+ * Nothing threw, nothing warned, the type checker saw nothing, and it is
+ * invisible in review — the only way to see it is to compile the stylesheet and
+ * diff the generated selectors against the classes the sources use.
+ *
+ * `inline` is load-bearing: it makes Tailwind substitute the literal
+ * `var(--surface-2)` into each generated utility instead of emitting a frozen
+ * copy of the value, so `bg-surface-2` keeps following the active theme.
+ *
+ * Bridge the whole palette, not just the token you happen to need today. A
+ * half-bridged palette reintroduces exactly this defect the next time someone
+ * writes `hover:bg-accent-soft`.
+ */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
+  --color-text-inverse: var(--text-inverse);
+
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-border: var(--accent-border);
+
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-caution: var(--caution);
+  --color-caution-soft: var(--caution-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+}
+
+/* The two shorthand aliases the product actually writes — `text-muted` and
+   `text-subtle` — do not fall out of the bridge, because the bridge names them
+   `text-text-muted` / `text-text-subtle`. They are declared as real utilities
+   rather than as raw CSS in `@layer utilities` for exactly the reason above: so
+   `hover:text-muted` and friends compile if anyone ever writes them. */
+@utility text-muted {
+  color: var(--text-muted);
+}
+@utility text-subtle {
+  color: var(--text-subtle);
+}
+/* The colour utilities that used to be hand-written in `@layer utilities` are
+   generated by the bridge now, with variants, which is the whole fix. But the
+   bridge is scanner-driven, and none of these six names appears bare in any
+   `.tsx` today — `bg-surface-2` occurs only as `hover:bg-surface-2`, and the
+   other five occur nowhere at all. Dropping the hand-written block would
+   therefore have removed six selectors from the build, and the in-flight work
+   to replace ~130 inline `style={{ background: "var(--…)" }}` sites with
+   classes is going to reach for precisely these names. Safelisting them keeps
+   the generated selector set a strict superset of what the hand-written block
+   produced, which is the property that makes this change reviewable at all.
+   Drop this directive once the sweep has landed and the scanner can see the
+   classes for itself. */
+@source inline("bg-surface bg-surface-2 bg-surface-3 text-positive text-caution text-negative");
+
+/* `scrollbar-none` stays hand-written. It takes no variant and it needs a
+   pseudo-element that `@utility` can only express through CSS nesting, so
+   leaving it flat keeps the emitted selector byte-identical. */
+@layer utilities {
+  .scrollbar-none { scrollbar-width: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; }
+}
+
 /* ── Light theme ──────────────────────────────────────────────────────────── */
 :root {
   --bg: oklch(98.5% 0.003 260);
@@ -68,11 +183,22 @@
   --surface-2: oklch(97% 0.004 260);
   --surface-3: oklch(94.5% 0.006 260);
   --border: oklch(90% 0.006 260);
-  --border-strong: oklch(84% 0.008 260);
+  /* 63%, not 84%. This is the border of every `<input>` in the product
+     (`action-form.tsx`, both login screens, the CRM and security pages), so
+     WCAG 1.4.11 applies: 3:1 against the adjacent colour. At 84% it measured
+     1.63:1 — a control boundary that a low-vision user cannot locate. Now
+     3.50:1 on `--surface`, 3.35:1 on `--bg`, 3.21:1 on `--surface-2`. */
+  --border-strong: oklch(63% 0.01 260);
 
   --text: oklch(22% 0.012 260);
   --text-muted: oklch(48% 0.012 260);
-  --text-subtle: oklch(62% 0.01 260);
+  /* 54%, not 62%. At 62% this measured 3.64:1 on white and it is the colour of
+     nearly every `text-2xs` meta line in the product, rendered at 11px — which
+     is unambiguously normal text needing 4.5:1. Now 5.06:1 on `--surface`,
+     4.85:1 on `--bg`, 4.64:1 on `--surface-2`. The cost is a compressed
+     hierarchy: subtle (54%) now sits close to muted (48%), so prefer size and
+     weight over colour when separating these two levels. */
+  --text-subtle: oklch(54% 0.011 260);
   --text-inverse: oklch(99% 0 0);
 
   --accent: oklch(52% 0.18 268);
@@ -81,9 +207,16 @@
   --accent-border: oklch(85% 0.07 268);
 
   --positive: oklch(52% 0.14 155);
-  --positive-soft: oklch(95% 0.04 155);
-  --caution: oklch(58% 0.14 75);
-  --caution-soft: oklch(96% 0.05 75);
+  /* Lifted 95% → 96.5% purely to carry the positive chip over 4.5:1; the pair
+     measured 4.46:1, which fails by a rounding error and fails all the same. */
+  --positive-soft: oklch(96.5% 0.04 155);
+  /* 54% at chroma 0.11, not 58% at 0.14. The old pair measured 4.37:1 on white
+     and 3.82:1 as a chip. 0.14 chroma is outside sRGB at this hue, so the
+     browser was clamping it and the written value was not the painted one;
+     0.11 is the honest in-gamut figure. Now 5.16:1 on `--surface`, 4.66:1 as a
+     chip on `--caution-soft`. */
+  --caution: oklch(54% 0.11 75);
+  --caution-soft: oklch(96.5% 0.028 75);
   --negative: oklch(53% 0.19 25);
   --negative-soft: oklch(96% 0.035 25);
 
@@ -101,11 +234,15 @@
   --surface-2: oklch(24.5% 0.015 265);
   --surface-3: oklch(28% 0.016 265);
   --border: oklch(30% 0.016 265);
-  --border-strong: oklch(38% 0.018 265);
+  /* 55%, not 38%: same WCAG 1.4.11 input-boundary rule as the light theme.
+     1.77:1 → 3.65:1 on `--surface`, and it still clears 3:1 on `--surface-3`. */
+  --border-strong: oklch(55% 0.018 265);
 
   --text: oklch(96% 0.004 265);
   --text-muted: oklch(74% 0.012 265);
-  --text-subtle: oklch(60% 0.014 265);
+  /* 66%, not 60%: 4.49:1 on `--surface` was a failure hiding behind a round-up,
+     and on the `--surface-2` hover row it was 4.11:1. Now 5.70 / 5.22. */
+  --text-subtle: oklch(66% 0.014 265);
   --text-inverse: oklch(17% 0.012 265);
 
   --accent: oklch(72% 0.15 268);
@@ -113,7 +250,8 @@
   --accent-soft: oklch(28% 0.06 268);
   --accent-border: oklch(40% 0.09 268);
 
-  /* Re-tuned, not inverted: saturated greens/reds vibrate on dark surfaces. */
+  /* Re-tuned, not inverted: saturated greens/reds vibrate on dark surfaces.
+     These already measured 7.09:1 to 9.37:1 and are left alone. */
   --positive: oklch(76% 0.15 155);
   --positive-soft: oklch(28% 0.05 155);
   --caution: oklch(80% 0.13 80);
@@ -134,10 +272,10 @@
     --surface-2: oklch(24.5% 0.015 265);
     --surface-3: oklch(28% 0.016 265);
     --border: oklch(30% 0.016 265);
-    --border-strong: oklch(38% 0.018 265);
+    --border-strong: oklch(55% 0.018 265);
     --text: oklch(96% 0.004 265);
     --text-muted: oklch(74% 0.012 265);
-    --text-subtle: oklch(60% 0.014 265);
+    --text-subtle: oklch(66% 0.014 265);
     --text-inverse: oklch(17% 0.012 265);
     --accent: oklch(72% 0.15 268);
     --accent-hover: oklch(79% 0.14 268);
@@ -153,6 +291,36 @@
     --shadow-pop: 0 12px 28px -8px oklch(0% 0 0 / 0.55);
     color-scheme: dark;
   }
+}
+
+/**
+ * ── Motion and focus ──────────────────────────────────────────────────────
+ *
+ * Durations from PDD §12, which is a table of intents rather than of numbers:
+ * hover/focus 120ms, disclosure and sheet 200ms, toast-out 320ms, skeleton
+ * shimmer 1200ms. Naming them stops the numbers drifting apart across files —
+ * the shimmer was 1.4s here while the spec said 1.2s, and nobody could see it.
+ *
+ * `--ease-out` deliberately redeclares the value Tailwind ships for its own
+ * `ease-out` utility, so the class and the token cannot disagree about what
+ * "ease out" means in this product.
+ *
+ * `--focus-ring` is a whole `outline` shorthand rather than a colour so a
+ * component can retune the ring locally — a thicker ring on a dark tile, say —
+ * without restating the accent. It resolves through `var(--accent)`, so it
+ * follows the theme without needing a copy in the dark blocks. Its measured
+ * ratio against `--surface` is 5.75:1 light and 6.97:1 dark; the global
+ * treatment it feeds was already compliant and is unchanged in behaviour.
+ */
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 200ms;
+  --motion-slow: 320ms;
+  --motion-shimmer: 1200ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  --focus-ring: 2px solid var(--accent);
+  --focus-ring-offset: 2px;
 }
 
 @layer base {
@@ -182,8 +350,8 @@
     font-feature-settings: "tnum" 1, "cv01" 1;
   }
   :focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: 2px;
+    outline: var(--focus-ring);
+    outline-offset: var(--focus-ring-offset);
     border-radius: var(--radius-sm);
   }
   ::selection {
@@ -193,6 +361,16 @@
   /* Honour the OS motion preference — vestibular disorders are common and this
      is a tool people use every day, not a marketing page. */
   @media (prefers-reduced-motion: reduce) {
+    /* Collapse the tokens as well as the properties. The blanket rule below can
+       only reach `animation-duration` and `transition-duration`; collapsing the
+       tokens covers anything that composes them — a shorthand, a nested
+       `@keyframes` timing, a duration read from JS. */
+    :root {
+      --motion-fast: 0.01ms;
+      --motion-base: 0.01ms;
+      --motion-slow: 0.01ms;
+      --motion-shimmer: 0.01ms;
+    }
     *,
     *::before,
     *::after {
@@ -247,23 +425,51 @@
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
     font-weight: 550;
-    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-    /* 44px minimum touch target on the mobile-first target device. */
-    min-height: 2.25rem;
+    transition: background-color var(--motion-fast) var(--ease-out),
+      border-color var(--motion-fast) var(--ease-out),
+      color var(--motion-fast) var(--ease-out),
+      opacity var(--motion-fast) var(--ease-out);
+    /* 44px minimum touch target on the mobile-first target device (PDD §9.2).
+       This read 2.25rem — 36px — directly beneath this comment for a long time.
+       The comment was right and the value was wrong. */
+    min-height: 2.75rem;
   }
   .btn-primary {
     background: var(--accent);
     color: var(--text-inverse);
   }
-  .btn-primary:hover {
-    background: var(--accent-hover);
-  }
   .btn-ghost {
     color: var(--text-muted);
   }
-  .btn-ghost:hover {
+  /* Destructive is a separate variant rather than "primary, but red", because
+     the two must never be one prop away from each other. Hover shifts toward
+     `--text`, which darkens on light and lightens on dark — the same direction
+     `--accent-hover` moves, so the feedback reads identically in both themes.
+     `--text-inverse` on `--negative` measures 5.66:1 light and 6.67:1 dark, and
+     the mixed hover value raises that to 6.56:1 and 7.56:1 — the label never
+     gets harder to read on the way to a destructive click. */
+  .btn-destructive {
+    background: var(--negative);
+    color: var(--text-inverse);
+  }
+  /* Hover is gated on not-disabled. A disabled control that still lights up
+     under the pointer reads as broken rather than as unavailable, and
+     `aria-disabled` is included because a button kept focusable for screen
+     readers is not caught by `:disabled`. */
+  .btn-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+    background: var(--accent-hover);
+  }
+  .btn-ghost:hover:not(:disabled):not([aria-disabled="true"]) {
     background: var(--surface-2);
     color: var(--text);
+  }
+  .btn-destructive:hover:not(:disabled):not([aria-disabled="true"]) {
+    background: color-mix(in oklab, var(--negative) 88%, var(--text));
+  }
+  .btn:disabled,
+  .btn[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
   }
 
   .skeleton {
@@ -274,24 +480,11 @@
       var(--surface-2) 75%
     );
     background-size: 200% 100%;
-    animation: shimmer 1.4s ease-in-out infinite;
+    animation: shimmer var(--motion-shimmer) ease-in-out infinite;
     border-radius: var(--radius-sm);
   }
   @keyframes shimmer {
     0% { background-position: 200% 0; }
     100% { background-position: -200% 0; }
   }
-}
-
-@layer utilities {
-  .text-positive { color: var(--positive); }
-  .text-caution { color: var(--caution); }
-  .text-negative { color: var(--negative); }
-  .text-muted { color: var(--text-muted); }
-  .text-subtle { color: var(--text-subtle); }
-  .bg-surface { background: var(--surface); }
-  .bg-surface-2 { background: var(--surface-2); }
-  .bg-surface-3 { background: var(--surface-3); }
-  .scrollbar-none { scrollbar-width: none; }
-  .scrollbar-none::-webkit-scrollbar { display: none; }
 }
