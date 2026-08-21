@@ -762,3 +762,104 @@ export const importBatchRows = pgTable(
     index("import_batch_rows_entity_idx").on(t.entityTable, t.entityId),
   ],
 );
+
+// ════════════════════════════════════════════════════════════════════════════
+//  EXCEPTION DISMISSALS — FR-V01
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * A judgement the owner has already made about an exception on the Today feed.
+ *
+ * The exception list is computed, not stored: five detectors run on every load
+ * and re-derive "7 overdue invoices" from the documents themselves. That is the
+ * right design — an exception must never be able to disagree with the ledger it
+ * describes — but it has one consequence, which is that without this table the
+ * same five rows reappear every morning no matter how many times the owner has
+ * looked at them and decided they are handled. A list that cannot be acted on
+ * becomes wallpaper, and wallpaper is indistinguishable from an empty list at a
+ * glance, which is the exact failure the exception-first dashboard exists to
+ * prevent.
+ *
+ * WHAT A DISMISSAL IS, PRECISELY.
+ *
+ * Not "hide this forever". A dismissal is a judgement about a *magnitude* — "I
+ * know about these 7 invoices worth AED 40k, the oldest 30 days out, and I have
+ * a plan". The same detector firing at 22 invoices worth AED 180k, oldest 90
+ * days, is a different fact about the business and the owner has never judged
+ * it. So the row stores the state of the condition at the moment of dismissal —
+ * a watermark — and the feed suppresses the exception only while the live
+ * condition is no worse than that watermark on every axis:
+ *
+ *   `dismissed_count`       how many rows were behind it,
+ *   `dismissed_amount`      how much money was at stake,
+ *   `dismissed_depth_days`  how far gone the worst one was — days overdue for
+ *                           an invoice or an installment, days past SLA for a
+ *                           job, days into the 60-day window for a lease.
+ *
+ * Any of the three growing past its watermark (amount with a small tolerance,
+ * because a dismissal that unravels over a few dirhams of drift is not a
+ * dismissal) re-raises the exception as new. That is what makes this safe to
+ * offer at all: the worst outcome of a dismissal is that the owner stops seeing
+ * a problem that is getting worse, and the watermark is the mechanism that
+ * makes that outcome impossible.
+ *
+ * WHY PER-USER AND NOT PER-TENANT.
+ *
+ * `user_id` is not null. A dismissal is one person's judgement about their own
+ * worklist, and a tenant-wide dismissal would let a branch manager clear a
+ * critical exception off the owner's home screen — an attention leak with the
+ * same shape as a permission leak, and much harder to notice.
+ *
+ * WHY THE SCOPE FINGERPRINT.
+ *
+ * The watermark is only comparable against a count drawn from the same
+ * population. A user re-scoped from the salon to the mobile shop would see a
+ * numerically similar count over completely different rows, and the watermark
+ * would suppress an exception nobody has ever looked at. `scope_fingerprint`
+ * is a digest of the business units in view when the judgement was made; a
+ * different scope simply does not match, and the exception returns.
+ *
+ * `expires_at` makes a snooze expressible ("bring this back in 7 days") without
+ * a second table. NULL means the watermark is the only thing that will bring it
+ * back.
+ */
+export const exceptionDismissals = pgTable(
+  "exception_dismissals",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Matches the detector key in apps/web/src/lib/data.ts — `overdue`,
+     *  `installments`, `sla`, `vacancy`, `lease`. Deliberately a varchar
+     *  rather than an enum: adding a detector must not need a migration. */
+    exceptionKey: varchar("exception_key", { length: 30 }).notNull(),
+    /** Mandatory. PRD FR-V01: "dismissable with a reason". A dismissal with no
+     *  reason is indistinguishable from a misclick in the audit log. */
+    reason: text("reason").notNull(),
+
+    dismissedCount: integer("dismissed_count").notNull(),
+    dismissedAmount: money("dismissed_amount").notNull().default("0"),
+    dismissedDepthDays: integer("dismissed_depth_days").notNull().default(0),
+
+    /** Digest of the business units in view. See the docblock above. */
+    scopeFingerprint: varchar("scope_fingerprint", { length: 40 }).notNull(),
+    /** NULL = no time limit; only a worsening condition brings it back. */
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [
+    // One live dismissal per user per exception: re-dismissing raises the
+    // watermark rather than accumulating rows the feed would have to reconcile.
+    // Partial on `deleted_at IS NULL` so restoring an exception and later
+    // setting it aside again works — the same shape `import_batches_fingerprint_uq`
+    // uses, and for the same reason.
+    uniqueIndex("exception_dismissals_live_uq")
+      .on(t.tenantId, t.userId, t.exceptionKey)
+      .where(sql`deleted_at IS NULL`),
+    index("exception_dismissals_user_idx").on(t.tenantId, t.userId),
+  ],
+);

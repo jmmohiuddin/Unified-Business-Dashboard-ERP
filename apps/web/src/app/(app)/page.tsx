@@ -3,6 +3,8 @@ import Link from "next/link";
 import { formatMoneyCompact } from "@nexus/core";
 import { requireSession } from "@/lib/session";
 import { loadActionItems, loadMetrics, metric, resolveToday } from "@/lib/data";
+import { dismissExceptionAction, restoreExceptionAction } from "@/lib/actions/exceptions";
+import { ActionForm, Disclosure, Field } from "@/components/action-form";
 import {
   BU_COLOR,
   BarRow,
@@ -458,9 +460,29 @@ async function SecondaryTiles() {
 
 // ── Band 2: what needs me today ─────────────────────────────────────────────
 
+/**
+ * The exception list. FR-V01, WF-05 §2.
+ *
+ * Three states, and the distinction between the last two is the part that is
+ * easy to get wrong:
+ *
+ *   ITEMS        the ranked list, each row a link to the rows behind it plus a
+ *                "set aside" control.
+ *   EMPTY        the caller may see exceptions and has none. A positive state,
+ *                not a blank region — WF-05 §2.3.
+ *   NO REGION    the caller may see no detector at all, so the band is ABSENT
+ *                rather than an empty card reading "0 open". A barber being
+ *                shown a permanently empty "Needs you today" card teaches them
+ *                the screen is broken; showing them a card that says nothing is
+ *                overdue also quietly confirms the shape of financial data they
+ *                have no right to. Absence is both kinder and tighter.
+ */
 async function ActionBand() {
   const session = await requireSession();
-  const items = await loadActionItems(session);
+  const feed = await loadActionItems(session);
+  if (feed.visibleDetectors === 0) return null;
+
+  const { items, dismissed } = feed;
   const ccy = session.baseCurrency;
   const tone = { critical: "negative", warning: "caution", opportunity: "accent" } as const;
 
@@ -474,7 +496,11 @@ async function ActionBand() {
       {items.length === 0 ? (
         <EmptyState
           title="Nothing needs your attention"
-          detail="No overdue invoices, no missed SLAs, no empty units. Enjoy it while it lasts."
+          detail={
+            dismissed.length > 0
+              ? `Everything firing right now is something you have already set aside. ${dismissed.length} of them, below.`
+              : "No overdue invoices, no missed SLAs, no empty units. Enjoy it while it lasts."
+          }
         />
       ) : (
         <ul className="divide-y" style={{ borderColor: "var(--border)" }}>
@@ -504,9 +530,72 @@ async function ActionBand() {
                 </div>
                 <Chip tone={tone[item.severity]}>{item.severity}</Chip>
               </Link>
+              {/*
+                Outside the <Link>, not inside it: a form nested in an anchor is
+                invalid HTML and the browser's recovery is to submit-and-navigate,
+                which would lose the dismissal.
+              */}
+              <Disclosure summary="Set this aside">
+                <p className="text-2xs text-muted leading-relaxed mb-3">
+                  It disappears from this list until it gets worse than it is right now —
+                  more of them, more money, or older. Your reason is kept on the audit log.
+                </p>
+                <ActionForm
+                  action={dismissExceptionAction}
+                  submitLabel="Set aside"
+                  pendingLabel="Saving…"
+                  variant="ghost"
+                  hidden={{ key: item.id }}
+                >
+                  <div className="grid sm:grid-cols-2 gap-3 mb-3">
+                    <Field
+                      label="Why (kept on the audit log)"
+                      name="reason"
+                      placeholder="Rajesh is chasing these, review Sunday…"
+                      required
+                    />
+                    <Field
+                      label="Bring it back"
+                      name="retention"
+                      options={[
+                        { value: "worse", label: "Only if it gets worse" },
+                        { value: "7", label: "In 7 days" },
+                        { value: "30", label: "In 30 days" },
+                      ]}
+                    />
+                  </div>
+                </ActionForm>
+              </Disclosure>
             </li>
           ))}
         </ul>
+      )}
+
+      {dismissed.length > 0 && (
+        <div className="border-t" style={{ borderColor: "var(--border)" }}>
+          <Disclosure summary={`${dismissed.length} set aside`}>
+            <ul className="space-y-3">
+              {dismissed.map((d) => (
+                <li key={d.key} className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold">{d.label}</p>
+                    <p className="text-2xs text-subtle mt-0.5 leading-snug">
+                      “{d.reason}”
+                      {d.expiresAt ? " · returns on a date you set" : " · returns if it worsens"}
+                    </p>
+                  </div>
+                  <ActionForm
+                    action={restoreExceptionAction}
+                    submitLabel="Put back"
+                    pendingLabel="…"
+                    variant="ghost"
+                    hidden={{ key: d.key }}
+                  />
+                </li>
+              ))}
+            </ul>
+          </Disclosure>
+        </div>
       )}
     </Card>
   );
