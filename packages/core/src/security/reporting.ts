@@ -39,7 +39,24 @@ export type ErrorSink = (report: ErrorReport) => void;
 
 let sink: ErrorSink | null = null;
 
-/** Install a collector. Called once at boot; absent in development. */
+/**
+ * Install a collector. Called once at boot from `apps/web/src/instrumentation.ts`.
+ *
+ * Two obligations on any sink, both of which fall out of `reportError` below:
+ *
+ *  1. **It must not throw.** Installing a sink replaces the stdout default —
+ *     it is not an addition to it — so a sink that throws loses the report
+ *     entirely: the catch swallows it, nothing reaches stdout, and
+ *     `reportError` returns null. A sink is therefore responsible for its own
+ *     durable write before it attempts anything remote. The boot adapter does
+ *     exactly that: `console.error` first, network second.
+ *
+ *  2. **It must not call `reportError`.** There is no re-entrancy guard here.
+ *     A sink that reports its own delivery failure through the reporter turns
+ *     one failed POST into an unbounded loop at the worst possible moment.
+ *
+ * Left unset — development, scripts, tests — reports go to stdout.
+ */
 export function setErrorSink(next: ErrorSink | null): void {
   sink = next;
 }
@@ -66,8 +83,14 @@ function fingerprintOf(where: string, message: string): string {
  * A Postgres error can quote the failing statement, which in this codebase
  * means bind parameters — amounts, names, encrypted PII envelopes. A connection
  * string in a driver error carries the password outright.
+ *
+ * Exported because `redact` in events.ts is the wrong tool for a raw string: it
+ * matches on object *keys* and cannot see a password embedded in free text. Any
+ * code path that puts a driver error message into a security event needs this
+ * one, not that one — the boot probe in instrumentation.ts is the first such
+ * caller, and it reports a connection failure by definition.
  */
-function scrubMessage(message: string): string {
+export function scrubMessage(message: string): string {
   return message
     .replace(/postgres(ql)?:\/\/[^\s"']+/gi, "postgresql://[redacted]")
     .replace(/\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b/g, "[iban]")

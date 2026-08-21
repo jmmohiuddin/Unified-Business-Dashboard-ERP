@@ -132,7 +132,12 @@ export function securityEvent(event: Omit<SecurityEvent, "at">): void {
 
   if (alertSink && (ALERTABLE.includes(full.kind) || full.severity === "critical")) {
     try {
-      void alertSink(full);
+      // `void` alone catches only a synchronous throw. An AlertSink may return a
+      // promise — every realistic one posts to a webhook — and a rejected
+      // promise escaping here is an unhandled rejection, which on Node 18+
+      // terminates the process by default. The alerting outage would then take
+      // down the very thing it was watching. Adopt the promise and swallow it.
+      Promise.resolve(alertSink(full)).catch(() => {});
     } catch {
       // An alerting outage must not break authentication.
     }
@@ -163,4 +168,13 @@ export const security = {
     securityEvent({ ...d, kind: "data.exported", severity: "warning" }),
   erased: (d: Omit<SecurityEvent, "at" | "kind" | "severity">) =>
     securityEvent({ ...d, kind: "data.erased", severity: "critical" }),
+  /**
+   * A control could not be verified at runtime.
+   *
+   * Critical on purpose, so it reaches the alert sink: the boot probes fail
+   * *open* on an indeterminate result rather than refusing to serve traffic on
+   * a network blip, and this event is what stops that from being silent.
+   */
+  configProblem: (d: Omit<SecurityEvent, "at" | "kind" | "severity">) =>
+    securityEvent({ ...d, kind: "config.problem", severity: "critical" }),
 };
