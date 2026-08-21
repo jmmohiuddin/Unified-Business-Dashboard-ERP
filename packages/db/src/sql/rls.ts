@@ -51,6 +51,25 @@ export const TENANT_SCOPED_TABLES: string[] = TENANT_TABLES.map((t) => t.name);
  * a global row must be READABLE by everyone but WRITABLE by no tenant. If the
  * WITH CHECK allowed NULL, any tenant could create a system role and grant
  * itself permissions across the platform.
+ *
+ * "Writable by no tenant" is three verbs, not one. A single policy carrying the
+ * `OR tenant_id IS NULL` arm in its USING clause blocks only the INSERT — the
+ * verb the WITH CHECK governs — and quietly permits the other two:
+ *
+ *   UPDATE  the USING arm makes the global row visible to the UPDATE, and the
+ *           WITH CHECK is satisfied by any new row carrying the caller's own
+ *           tenant_id. `UPDATE roles SET tenant_id = '<mine>' WHERE key='owner'`
+ *           therefore succeeds: the platform role catalogue is captured as one
+ *           tenant's private, mutable copy while every other tenant's
+ *           memberships still point at it.
+ *   DELETE  has no WITH CHECK at all in PostgreSQL — it is governed by USING
+ *           alone. `DELETE FROM roles WHERE tenant_id IS NULL` would take the
+ *           catalogue away from every tenant at once.
+ *
+ * So the read arm lives in its own `FOR SELECT` policy and the write policy
+ * stays strict for all commands. Permissive policies are OR-ed per command, so
+ * SELECT sees both arms; INSERT, UPDATE and DELETE only ever see the strict
+ * one, which no NULL-tenant row can satisfy.
  */
 export const GLOBAL_ROW_TABLES: string[] = TENANT_TABLES.filter((t) => t.tenantNullable).map(
   (t) => t.name,
@@ -164,14 +183,24 @@ export function buildPolicyStatements(appRole = "nexus_app"): string[] {
     // policies. If the app ever ends up owning a table, isolation still holds.
     stmts.push(`ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;`);
     stmts.push(`DROP POLICY IF EXISTS ${policy} ON "${table}";`);
+    // No FOR clause means FOR ALL: this one policy governs SELECT, INSERT,
+    // UPDATE and DELETE alike, and it never admits a NULL tenant_id on either
+    // side. On a global-row table the read arm is added back below, for SELECT
+    // only, so widening the read can never widen a write.
     stmts.push(`
       CREATE POLICY ${policy} ON "${table}"
-        USING (
-          tenant_id = current_setting('app.tenant_id', true)::uuid
-          ${allowsGlobalRows ? "OR tenant_id IS NULL" : ""}
-        )
+        USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
         WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
     `);
+    if (allowsGlobalRows) {
+      const readPolicy = `${table}_global_read`;
+      stmts.push(`DROP POLICY IF EXISTS ${readPolicy} ON "${table}";`);
+      stmts.push(`
+        CREATE POLICY ${readPolicy} ON "${table}"
+          FOR SELECT
+          USING (tenant_id IS NULL);
+      `);
+    }
     // The policy column must be indexed or every policy check is a seq scan.
     stmts.push(
       `CREATE INDEX IF NOT EXISTS "${table}_tenant_rls_idx" ON "${table}" (tenant_id);`,
