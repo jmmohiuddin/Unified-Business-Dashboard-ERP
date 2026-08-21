@@ -8,6 +8,7 @@ import { Card, CardHeader } from "@/components/ui";
 import {
   BuTag, DataTable, DaysPill, FilterTabs, PageHeader, StatStrip, StatusPill, TableEmpty,
 } from "@/components/page";
+import { BulletChart, ChartEmpty, concludeBullet, type BulletRow } from "@/components/charts";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,11 @@ export const dynamic = "force-dynamic";
  *  • OCCUPANCY AS A BULLET GRAPH. "83%" is a fact; "83% against a 90% target,
  *    with three leases ending inside 60 days" is a decision. The bar carries
  *    the measure, the target and the qualitative bands in one glance, which is
- *    the whole reason the form exists.
+ *    the whole reason the form exists. It is now `BulletChart` from
+ *    `components/charts` rather than the SVG this file used to hand-roll —
+ *    same form, but it arrives with the required conclusion line and the
+ *    keyboard-reachable table twin that PDD §7.7 and §7.8 ask of every figure,
+ *    neither of which the local copy had.
  *  • ENDING SOON, WITH A RENEWAL LINK. A lease expiring in 22 days is the
  *    highest-value thing on this page and it used to be a chip in a column.
  *  • [LET] ON A VACANT UNIT. A vacant flat is rent burning every month; the
@@ -46,47 +51,16 @@ export const dynamic = "force-dynamic";
 const OCCUPANCY_TARGET = 90;
 
 /**
- * Bullet graph.
+ * The measure's polarity, as a mark tone.
  *
- * Stephen Few's form, and it is the right one here for the reason it was
- * invented: a single measure that only means something against a target and a
- * qualitative scale. Server-rendered inline SVG, like every other chart in this
- * app — a charting library would cost more bytes than the whole page.
+ * Ten points is one qualitative band on the scale below (`bandAt`), so "within
+ * a band of target" is caution and further than that is a problem. Naming the
+ * JOB rather than passing a colour is what stops a status hue and a business
+ * identity hue being spelled the same way — see the note on `MarkTone`.
  */
-function OccupancyBullet({ value, target }: { value: number; target: number }) {
-  const pct = Math.max(0, Math.min(100, value));
-  const tgt = Math.max(0, Math.min(100, target));
-  const tone =
-    value >= target ? "var(--positive)" : value >= target - 10 ? "var(--caution)" : "var(--negative)";
-  return (
-    <div>
-      <div className="flex items-baseline gap-2 mb-1.5">
-        <span className="text-2xl font-semibold tnum tracking-tight" style={{ color: tone }}>
-          {value.toFixed(1)}%
-        </span>
-        <span className="text-2xs text-subtle">let</span>
-      </div>
-      <svg
-        viewBox="0 0 100 10"
-        preserveAspectRatio="none"
-        className="w-full h-4"
-        role="img"
-        aria-label={`Occupancy ${value.toFixed(1)} percent against a target of ${target} percent`}
-      >
-        {/* Qualitative bands: poor, satisfactory, good. Lightest is best. */}
-        <rect x="0" y="0" width="100" height="10" fill="var(--surface-3)" />
-        <rect x="0" y="0" width={String(tgt - 10)} height="10" fill="var(--surface-2)" opacity="0.6" />
-        {/* The measure. */}
-        <rect x="0" y="3" width={String(pct)} height="4" fill={tone} />
-        {/* The target marker. */}
-        <rect x={String(tgt - 0.4)} y="0.5" width="0.8" height="9" fill="var(--text)" />
-      </svg>
-      <div className="flex justify-between text-2xs text-subtle mt-1">
-        <span>0%</span>
-        <span className="tnum">target {target}%</span>
-      </div>
-    </div>
-  );
+function occupancyTone(actual: number, target: number): BulletRow["tone"] {
+  if (actual >= target) return "positive";
+  return actual >= target - 10 ? "caution" : "negative";
 }
 
 export default async function RentalsPage({
@@ -239,6 +213,41 @@ export default async function RentalsPage({
   const occupancy = occ?.value ?? 0;
   const letCount = units.filter((u) => u.status === "occupied").length;
 
+  /**
+   * The occupancy bullet graph (WF-05 §9.1, FR-R04).
+   *
+   * Three rows on one shared 0–100 scale rather than one, because "73% let" is
+   * an average over two things that are not alike: sixteen flats that turn over
+   * once a year and forty parking bays that turn over constantly. The blended
+   * figure can sit on target while every empty unit is a flat, which is the
+   * expensive kind. The per-kind rows come straight from the metric's own
+   * breakdown so the split cannot disagree with the headline above it.
+   *
+   * All three carry the same target. Nothing in the product stores a target per
+   * unit kind — see the note on `OCCUPANCY_TARGET` — and inventing a second
+   * constant here would be a made-up number wearing the same clothes as a
+   * measured one.
+   */
+  const percent = (v: number) => `${v.toFixed(1)}%`;
+  const occupancyRows: BulletRow[] = [
+    {
+      label: "All units",
+      actual: occupancy,
+      target: OCCUPANCY_TARGET,
+      tone: occupancyTone(occupancy, OCCUPANCY_TARGET),
+      meta: `${letCount} of ${units.length} let`,
+    },
+    ...(occ?.breakdown ?? [])
+      .filter((b) => b.key === "apartment" || b.key === "parking_bay")
+      .map((b) => ({
+        label: b.label,
+        actual: b.value,
+        target: OCCUPANCY_TARGET,
+        tone: occupancyTone(b.value, OCCUPANCY_TARGET),
+        meta: `${String(b.meta?.occupied ?? 0)} of ${String(b.meta?.total ?? 0)} let`,
+      })),
+  ];
+
   // Preserve the sibling filter across a click. See the note above.
   const unitsParam = leaseFilter === "any" ? "units" : `leases=${leaseFilter}&units`;
   const leasesParam = unitFilter === "any" ? "leases" : `units=${unitFilter}&leases`;
@@ -263,8 +272,17 @@ export default async function RentalsPage({
       />
 
       <StatStrip
+        /**
+         * Occupancy is deliberately NOT a stat here any more.
+         *
+         * WF-05 §9.1 asks for it as a bullet graph, and it was appearing twice:
+         * once as a bare "73.2%" in this strip and again, correctly, in the
+         * chart below. A bare percentage is the thing the bullet graph exists to
+         * replace — it is only a decision once you can see the target beside it —
+         * and printing both teaches the reader that the strip is the real number
+         * and the chart is decoration.
+         */
         stats={[
-          { label: "Occupancy", value: `${occupancy}%`, tone: occupancy >= OCCUPANCY_TARGET ? "positive" : "caution" },
           { label: "Annual rent roll", value: formatMoney(annualRoll, ccy, 0), hint: `${leases.length} active leases` },
           {
             label: "Vacant units",
@@ -287,19 +305,41 @@ export default async function RentalsPage({
 
       {/* ── The board: occupancy against target, what is ending, what to run ── */}
       <div className="grid lg:grid-cols-3 gap-5">
-        <Card className="p-4" as="div">
-          <p className="label mb-2">Occupancy</p>
-          <OccupancyBullet value={occupancy} target={OCCUPANCY_TARGET} />
-          <p className="text-2xs text-muted mt-3 leading-relaxed">
-            {letCount} of {units.length} let.{" "}
-            {(counts[0]?.expiring ?? 0) > 0
-              ? `${counts[0]!.expiring} lease${counts[0]!.expiring === 1 ? "" : "s"} end within 60 days.`
-              : "Nothing ends within 60 days."}{" "}
-            {vacancyCost > 0 && (
-              <>Vacancy is costing {formatMoneyCompact(vacancyCost, ccy)} a month.</>
-            )}
-          </p>
-        </Card>
+        {units.length === 0 ? (
+          <ChartEmpty
+            title="Occupancy"
+            conclusion="There are no units on the books yet, so there is no occupancy to measure."
+            note={`Target ${percent(OCCUPANCY_TARGET)}`}
+          />
+        ) : (
+          <BulletChart
+            title="Occupancy"
+            rows={occupancyRows}
+            format={percent}
+            max={100}
+            /* One qualitative band, ending ten points under target: "below here
+               is a problem". Greyscale by design — the band is context, and a
+               coloured band would compete with the measure bar it sits behind. */
+            bandAt={OCCUPANCY_TARGET - 10}
+            conclusion={concludeBullet({
+              subject: "Occupancy",
+              actual: occupancy,
+              target: OCCUPANCY_TARGET,
+              format: percent,
+              count: { done: letCount, of: units.length, unit: "unit" },
+            })}
+            note={
+              (counts[0]?.expiring ?? 0) > 0
+                ? `${counts[0]!.expiring} lease${counts[0]!.expiring === 1 ? "" : "s"} end within 60 days.`
+                : "Nothing ends within 60 days."
+            }
+            footnote={
+              vacancyCost > 0
+                ? `Vacancy is costing ${formatMoneyCompact(vacancyCost, ccy)} a month in list rent.`
+                : undefined
+            }
+          />
+        )}
 
         <Card className="lg:col-span-2">
           <CardHeader

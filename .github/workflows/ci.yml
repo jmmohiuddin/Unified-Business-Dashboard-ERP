@@ -49,6 +49,12 @@ jobs:
       # explicit answer here rather than inferring trust from the VERCEL
       # variable. Nothing proxies the CI server, so the honest answer is false.
       TRUST_PROXY: "false"
+      # Which environment this deployment believes it is, for the fence in
+      # scripts/check-env.mjs. Declared rather than derived for the reason that
+      # file documents: NODE_ENV is "production" here, so anything inferring
+      # from it would call a throwaway container production. The fence compares
+      # this claim against the connected database.
+      NEXUS_ENV: test
 
     steps:
       - uses: actions/checkout@v5
@@ -58,6 +64,25 @@ jobs:
           cache: npm
 
       - run: npm ci --no-audit --no-fund
+
+      # The catastrophic deploy mistake this project can still make is pointing
+      # a preview or staging deployment at the production database — today
+      # every Vercel preview does exactly that. The fence in check-env.mjs is
+      # what refuses; these two steps are what stop the fence from rotting.
+      #
+      # The self-test is the load-bearing half. Running the guard against a
+      # correctly-configured runner only proves that a healthy environment
+      # passes; the fixtures prove that each specific accident is still caught,
+      # and assert the exact set of failures so a rule that has been widened
+      # until everything trips fails here too.
+      - name: Environment fence self-test
+        run: node scripts/check-env.mjs --self-test
+
+      # And then the guard itself, against CI's own environment. Cheap, and it
+      # exercises the connection-string parsing on real values rather than
+      # fixtures.
+      - name: Environment fence
+        run: node scripts/check-env.mjs
 
       # Unit tests first: no database, no server, seconds to run. They cover the
       # pure functions that produce legally consequential numbers — the class of

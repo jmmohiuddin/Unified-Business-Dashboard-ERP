@@ -31,6 +31,7 @@
     "outbox": "npm run outbox -w @nexus/core --",
     "backup": "node scripts/backup.mjs",
     "backup:verify": "node scripts/backup.mjs --verify",
+    "rotate:passwords": "node scripts/rotate-passwords.mjs",
     "test:writes": "npm run test:writes -w @nexus/core",
     "keygen": "npm run keygen -w @nexus/core",
     "audit": "npm audit --audit-level=high",

@@ -175,6 +175,15 @@ backup.
 ✓ Restore drill passed. The backup is usable.
 ```
 
+The drill and the replication step answer two different questions — "does this
+restore" and "does a copy exist anywhere else" — so the job reports both, and
+the failing one gets the last word.
+
+```
+✓ Restore drill passed. The backup is usable.
+⚠ No offsite copy — replication is not configured.
+```
+
 ### Injection
 Every value is a bound parameter. The single `sql.raw` use takes a column name
 from a closed internal set. Arrays use explicit `ARRAY[$1::uuid, …]`. Zod
@@ -292,12 +301,127 @@ while closing an old one.
 ```
 
 ### Encrypted backups
-AES-256-GCM, streaming, keyed separately from the application. The plaintext
-dump is deleted immediately after encryption. `npm run backup:verify` decrypts
-**the stored artefact** and restores it — proving the thing that would actually
-go offsite is usable, not just that `pg_dump` ran. Without
-`BACKUP_ENCRYPTION_KEY` it still works but warns loudly, because an unencrypted
-dump is the easiest way to bypass every field-level control above.
+AES-256-GCM, streaming, keyed separately from the application, with a random
+per-backup salt. The plaintext dump is deleted immediately after encryption.
+`npm run backup:verify` decrypts **the stored artefact** and restores it —
+proving the thing that actually goes offsite is usable, not just that `pg_dump`
+ran. Without `BACKUP_ENCRYPTION_KEY` the job **refuses to run**: there is no
+plaintext path, because an unencrypted dump is the easiest way to bypass every
+field-level control above. A key that is short, low-entropy, placeholder-shaped
+or equal to the one `.env.example` publishes is refused on the same grounds.
+
+### Offsite replication
+`scripts/backup-replicate.mjs`. S3-compatible object storage — AWS, Cloudflare
+R2, Backblaze B2, MinIO, Wasabi — over the REST API with SigV4 signing and **no
+vendor SDK**. Five HTTP verbs and ~120 lines of signing, against ~80 transitive
+packages that would each hold read access to the most sensitive file the
+business owns. The trade is stated where it costs something: there is no
+multipart upload, so an artefact over the 5 GiB single-PUT limit is **refused
+loudly** rather than truncated.
+
+**Encryption happens before upload, and the order is enforced, not assumed.**
+
+```
+pg_dump → .dump  ·  encrypt → .dump.enc  ·  unlink .dump  ·  THEN upload
+```
+
+The upload path re-reads the first six bytes and refuses anything that is not
+`NEXBK1`/`NEXBK2` ciphertext. That guard exists because a refactor that swaps
+the unlink and the upload reads perfectly well and would publish every party,
+salary and Emirates ID in the business to an object store. The provider holds
+ciphertext; `BACKUP_ENCRYPTION_KEY` never leaves the machine.
+
+**The replica is verified, not assumed.** An HTTP 200 says the request was
+accepted, not that the bytes on the far side are the bytes that were sent. After
+the PUT the object is read back in full and its SHA-256 compared end to end
+(`BACKUP_S3_VERIFY=head` relaxes this to size + ETag and says so in the output
+rather than reporting the stronger check). The upload itself is independently
+integrity-checked: `x-amz-content-sha256` carries the real payload hash, which
+the server validates against the body it received.
+
+**Replication is off by default and loud when it fails.** It turns on only when
+`BACKUP_S3_BUCKET` is set; once set, every other variable is mandatory, because
+a half-configured target is a backup that reports success and goes nowhere. If
+replication is configured and does not complete, `npm run backup` **exits
+non-zero** — a green backup whose only copy is on the machine it protects is the
+same defect as an outbox marking undelivered messages `success`. With
+replication unconfigured the job still succeeds locally and says exactly what
+did not happen:
+
+```
+⚠ REPLICATION: NOT CONFIGURED — nothing was uploaded.
+  This backup exists only at ./backups on this machine. The disk that
+  loses the database loses this file with it, and the 15-year UAE
+  retention obligation is not met by local disk.
+```
+
+### Retention policy
+Driven by the **fifteen-year** retention obligation on UAE real-estate and
+tenancy records. Grandfather-father-son, applied identically to local disk and
+to the offsite copy:
+
+| Tier | Kept | Default |
+|---|---|---|
+| Daily | every backup | last 30 days |
+| Weekly | newest per ISO week | last 26 weeks |
+| Monthly | newest per calendar month | last 24 months |
+| **Yearly** | **newest per calendar year** | **15 years — the obligation** |
+| Expired | eligible for deletion | beyond 15 years |
+
+The first three rows are operational and tunable. The floor is legal:
+`BACKUP_RETENTION_FLOOR_YEARS` may be **raised** but any value below 15 is
+refused, so a mistyped variable on one host cannot delete evidence the business
+is required to be able to produce. Beyond the floor, deletion is permitted
+rather than mandatory-forever — PDPL data minimisation argues for eventually
+letting go of personal data the law no longer requires.
+
+Three refusals sit on top of the tiers, because retention bugs are discovered
+years later, when the deleted thing is the thing being asked for:
+
+- the **most recent** backup is never a prune candidate under any policy;
+- a **floor guard** promotes back to `keep` any backup that is the only
+  survivor for its calendar year inside the floor. This is not theoretical:
+  ISO weeks straddle the new year, so `2025-12-31` and `2026-01-02` share week
+  `2026-W01` and week-bucketing alone would prune the older one — emptying
+  calendar 2025 if it held nothing else;
+- a file whose name this tool did not generate is **never deleted**.
+
+Pruning is `off` by default; `BACKUP_PRUNE=local|remote|both` opts in and
+`BACKUP_PRUNE_DRY_RUN=true` (or `--plan`) reports the decision without acting.
+Every entry carries a reason, because "why did you delete that" is a question
+this will be asked during an audit.
+
+```
+· Retention — offsite (https://…/nexus/)
+  10 kept · 4 pruned
+  − nexus-2026-06-10T02-00-00.dump.enc  (superseded within week 2026-W24)
+  − nexus-2019-07-01T02-00-00.dump.enc  (superseded within year 2019)
+  − nexus-2009-06-01T02-00-00.dump.enc  (older than the 15-year retention floor)
+```
+
+Object-store **versioning and object lock** are recommended on top of this and
+are not configured by this code: the credentials the backup job holds can delete
+what the job uploaded, which is the wrong shape for a fifteen-year archive
+facing ransomware. That is a bucket-policy decision for whoever provisions the
+target.
+
+### Where the backups live is an open legal question — Q-8
+`BACKUP_S3_REGION` and `BACKUP_S3_ENDPOINT` are **required and have no
+default**, and this is deliberate.
+
+Q-8 is unresolved: whether storing UAE personal data outside the UAE satisfies
+PDPL cross-border transfer rules for records carrying a fifteen-year in-UAE
+retention obligation. The question applies to the backup target at least as
+much as to the primary database — a backup is a complete copy of every party,
+salary and Emirates ID in the business, at rest, for fifteen years, and the
+primary is already in Neon `ap-southeast-1` (Singapore).
+
+**This code does not choose a region and will not disguise a choice as a
+default.** `ap-southeast-1` is not a neutral fallback; it is a legal decision
+about where UAE personal data comes to rest. Whoever sets those two variables is
+the person accepting that decision, and it should be taken with advice, not by
+copying an example. Until Q-8 has an answer, that is the honest state: the
+mechanism is built and the location is not chosen.
 
 ### Dependency scanning and CI
 `npm audit --audit-level=high` gates the build. The full suite — build, metrics,
@@ -318,7 +442,8 @@ suppressed.
 
 | Control | Status |
 |---|---|
-| Offsite backup replication | Backups are encrypted but stay on local disk — needs an S3/GCS target and a retention policy |
+| Offsite backup replication | **Built** — S3-compatible target, verified by read-back, with a 15-year retention floor. Not *enabled*: no region has been chosen, pending Q-8 |
+| Immutable backup storage | Versioning and object lock are recommended in § Retention policy and are a bucket-policy decision, not configured here |
 | Centralised log shipping | Events are structured and ready; no collector is wired |
 | SSO / SAML | Not implemented |
 | Signed webhooks | Not implemented — no outbound integrations yet |
@@ -356,7 +481,7 @@ something already closed — valuable, and a different thing.
 | A09 Logging & monitoring | **Partial** — audit log written and queryable; shipping and alerting outstanding |
 | A10 SSRF | N/A — no outbound fetches to user-supplied URLs |
 
-The remaining gaps are operational (scanning, log shipping, offsite backups, a
-pen test) rather than architectural. The controls that are expensive to retrofit
+The remaining gaps are operational (scanning, log shipping, choosing a backup
+region, a pen test) rather than architectural. The controls that are expensive to retrofit
 — isolation model, permission model, ledger integrity, idempotency, consent —
 are in place.

@@ -1,27 +1,80 @@
-import { sql } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
-import { Money, can, generateSif, reportError, tryDecryptPii, type WpsEmployee } from "@nexus/core";
+import { can, generateSif, reportError, security } from "@nexus/core";
 import { getSession } from "@/lib/session";
 import { rateLimit } from "@/lib/rate-limit";
+/**
+ * Imported from the service module directly rather than through the
+ * `@nexus/core` barrel.
+ *
+ * `packages/core/src/services/index.ts` is coordinator-owned while several
+ * features land in one working tree, so this feature's
+ * `export * from "./payroll.ts"` line has not been added yet. Once it is,
+ * change this import and the two in `(app)/hr/payroll/**` to `@nexus/core` and
+ * nothing else moves.
+ */
+import { loadWpsExport } from "../../../../../../../packages/core/src/services/payroll.ts";
 
 /**
  * WPS Salary Information File download.
  *
- * A real, bank-submittable CSV — not a mock. MOHRE's format is unforgiving
- * (fixed column order, exactly one trailing SCR record, CRLF line endings), and
- * a single malformed field rejects the whole batch. Generating it here removes
- * the monthly spreadsheet that most SMEs still maintain by hand.
+ * A real, bank-submittable CSV — not a mock.
  *
- * Validation warnings are returned as a header rather than silently dropped:
- * the owner needs to know a missing IBAN will bounce the file BEFORE payday,
- * not after the bank rejects it.
+ * ── WHAT CHANGED, AND WHY IT MATTERED ───────────────────────────────────────
+ *
+ * This route used to BUILD the payroll. It read `employees`, summed four
+ * allowance columns, and declared every person a full-month, fixed-package
+ * payee with no overtime, no commission, no leave and no deductions
+ * (audit CALC-15). Joiners, leavers and part-months were all misreported by
+ * construction, and the resulting file — an instruction to a bank to move real
+ * salaries — was a computation nobody in the business had ever approved,
+ * running in parallel to a `payroll_runs` table that nothing wrote.
+ *
+ * It is now a serialiser over a committed payroll run (FR-C06). Every amount
+ * comes from a payslip that was reconciled, journalled and audited;
+ * `loadWpsExport` reads it and `generateSif` lays it out. If no run has been
+ * approved for the month, this route produces NOTHING and says so — which is
+ * the honest answer, and the whole point: the file is a consequence of the
+ * payroll, not a second opinion about it.
+ *
+ * ── VALIDATION IS A GATE, NOT A HEADER (CALC-16) ─────────────────────────────
+ *
+ * `validateWps` warnings used to be reduced to `X-WPS-Warnings: 4` and the file
+ * was handed over regardless — so a SIF containing `BAD` as an IBAN, an empty
+ * routing field and a zero salary downloaded silently, and the bank found out
+ * two days before payday. The messages are now returned as JSON with HTTP 409
+ * and the download is refused, unless the caller explicitly acknowledges them
+ * with `?acknowledgeWarnings=1`. The escape hatch exists because a validation
+ * rule written against an unverified layout (Q-7) must not be able to make
+ * payroll impossible; it is deliberately not the default.
+ *
+ * ── WHAT IS DELIBERATELY UNCHANGED ───────────────────────────────────────────
+ *
+ * The hardening this endpoint acquired after a past incident: the try/catch
+ * that keeps stack traces off the wire, the per-user rate limit, the
+ * shape-and-range check on the month, and the business-unit scope filter. All
+ * still here, all still for the reasons stated at each one.
  */
+
+/**
+ * Employer identity, as registered with MOHRE.
+ *
+ * Still constants. They belong in tenant settings — the audit says so and it is
+ * right — but that is a settings-schema change owned elsewhere, and moving them
+ * here would have been a change to a file this feature does not own. Named and
+ * grouped so the move is one edit.
+ */
+const EMPLOYER = {
+  id: "1234567890123",
+  agentId: "0000000",
+  routingCode: "402010101",
+};
+
 export async function GET(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ month: string }> },
 ) {
   try {
-    return await handle(params);
+    return await handle(req, params);
   } catch (err) {
     // This endpoint decrypts IBANs. An unhandled throw here would surface a
     // framework stack trace, and stack traces from this code path can carry
@@ -31,7 +84,14 @@ export async function GET(
   }
 }
 
-async function handle(params: Promise<{ month: string }>) {
+/** JSON with no store. Errors from this route are read by a screen, not a parser. */
+const json = (body: unknown, status: number) =>
+  new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+  });
+
+async function handle(req: Request, params: Promise<{ month: string }>) {
   const session = await getSession();
   if (!session) return new Response("Unauthorized", { status: 401 });
 
@@ -66,6 +126,8 @@ async function handle(params: Promise<{ month: string }>) {
     return new Response("Expected a valid month in YYYY-MM form", { status: 400 });
   }
 
+  const acknowledged = new URL(req.url).searchParams.get("acknowledgeWarnings") === "1";
+
   /**
    * Business-unit scope.
    *
@@ -80,57 +142,87 @@ async function handle(params: Promise<{ month: string }>) {
    */
   const scope = session.principal.businessUnitIds;
 
-  const rows = await withTenant(
+  const source = await withTenant(
     { tenantId: session.tenantId, userId: session.userId },
-    (tx) =>
-      tx.execute<{
-        full_name: string; wps_person_id: string | null; wps_routing_code: string | null;
-        iban_enc: string | null; basic: string; housing: string; transport: string; other: string;
-      }>(sql`
-        SELECT full_name, wps_person_id, wps_routing_code, iban_enc,
-               base_salary AS basic, housing_allowance AS housing,
-               transport_allowance AS transport, other_allowance AS other
-          FROM employees
-         WHERE status IN ('active','probation')
-           ${scope ? sql`AND primary_business_unit_id = ANY(${scope}::uuid[])` : sql``}
-         ORDER BY employee_code
-      `),
+    (tx) => loadWpsExport(tx, { period: month, businessUnitIds: scope }),
   );
 
-  const daysInPeriod = new Date(Date.UTC(year, monthNo, 0)).getUTCDate();
+  /**
+   * No run, no file.
+   *
+   * Refusing here is the behaviour change that makes this route trustworthy.
+   * The old code would happily produce a file for any month in an eighty-year
+   * range, including months that had not happened yet, because it derived
+   * everything from current master data.
+   */
+  if (!source) {
+    return json(
+      {
+        error: `No approved payroll run exists for ${month}.`,
+        detail:
+          "The WPS file is generated from a committed payroll run, not from the employee " +
+          "records. Run and approve payroll for this month first.",
+        where: "/hr/payroll",
+      },
+      404,
+    );
+  }
 
-  const employees: WpsEmployee[] = rows.map((e) => ({
-    personId: e.wps_person_id ?? "",
-    agentId: "0000000",
-    routingCode: e.wps_routing_code ?? "",
-    // Decrypted only here, in the one place that legitimately needs the full
-    // account number, and never logged.
-    iban: tryDecryptPii(e.iban_enc) ?? "",
-    daysInPeriod,
-    // Fixed income is the contractual package; variable is overtime and
-    // commission, which would come from the payroll run in production.
-    //
-    // Summed in decimal: this figure is written into a file submitted to a
-    // MOHRE agent and paid out by a bank, so four numeric(18,4) columns added
-    // as floats is not an acceptable way to arrive at it.
-    fixedIncome: Money.toNumber(
-      Money.sum([e.basic, e.housing, e.transport, e.other].map(Money.fromDb)),
-    ),
-    variableIncome: 0,
-    daysOnLeave: 0,
-    employeeName: e.full_name,
-  }));
+  /**
+   * The security event.
+   *
+   * One request decrypts the IBAN of every employee on the run. Nothing
+   * recorded that before — `security.piiDecrypted` existed with no caller
+   * anywhere in the product — so a stolen session enumerating months left the
+   * same trace as a legitimate monthly download: none.
+   *
+   * The COUNT is recorded and never a value. `securityEvent` redacts
+   * sensitive-looking keys before the line leaves the module, but the only
+   * guarantee worth relying on is not putting the plaintext in.
+   */
+  security.piiDecrypted({
+    tenantId: session.tenantId,
+    userId: session.userId,
+    actorRole: session.principal.roleKey,
+    detail: {
+      route: "api/wps",
+      field: "employees.iban_enc",
+      period: month,
+      decrypted: source.ibanDecryptions,
+      failed: source.ibanFailures,
+      runIds: source.runIds,
+    },
+  });
 
   const file = generateSif({
-    // In production these come from tenant settings, registered with MOHRE.
-    employerId: "1234567890123",
-    employerAgentId: "0000000",
-    employerRoutingCode: "402010101",
+    employerId: EMPLOYER.id,
+    employerAgentId: EMPLOYER.agentId,
+    employerRoutingCode: EMPLOYER.routingCode,
     salaryMonth: month,
     // Passed in rather than read from the clock so the output is reproducible.
     generatedAt: new Date(`${month}-01T09:00:00Z`),
-    employees,
+    employees: source.employees,
   });
+
+  /* ── CALC-16: block on warnings, and say what they are ─────────────────── */
+
+  if (file.warnings.length > 0 && !acknowledged) {
+    return json(
+      {
+        error: `This SIF would be rejected — ${file.warnings.length} problem${
+          file.warnings.length === 1 ? "" : "s"
+        } found.`,
+        detail:
+          "Fix these on the employee records and download again. Catching a malformed IBAN " +
+          "here is materially better than the bank rejecting the whole batch two days before " +
+          "payday. To download it anyway, add ?acknowledgeWarnings=1.",
+        period: month,
+        employees: source.employeeCount,
+        warnings: file.detailedWarnings,
+      },
+      409,
+    );
+  }
 
   return new Response(file.content, {
     headers: {
@@ -138,7 +230,10 @@ async function handle(params: Promise<{ month: string }>) {
       "Content-Disposition": `attachment; filename="${file.fileName}"`,
       "X-WPS-Records": String(file.recordCount),
       "X-WPS-Total": file.totalSalaries.toFixed(2),
+      // Only ever non-zero on an acknowledged download; the messages themselves
+      // came back with the 409 that preceded it.
       "X-WPS-Warnings": String(file.warnings.length),
+      "X-WPS-Run-Status": source.status,
       "Cache-Control": "no-store",
     },
   });

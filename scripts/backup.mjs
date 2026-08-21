@@ -9,6 +9,28 @@
  * database and asserts that the trial balance, the document count and the
  * gratuity provision all reproduce exactly. If any of those drift, the backup
  * is unusable and you find out now rather than during an incident.
+ *
+ * ── ORDER OF OPERATIONS, and why it is this order ───────────────────────────
+ *
+ *   1. pg_dump          → plaintext .dump on local disk
+ *   2. encryptFile      → .dump.enc   (AES-256-GCM, random per-backup salt)
+ *   3. unlink           → the plaintext is gone
+ *   4. replicate        → the CIPHERTEXT is uploaded offsite and verified
+ *   5. prune            → retention policy applied, local and/or offsite
+ *   6. --verify         → the stored ciphertext is decrypted and restored
+ *
+ * Steps 2 and 3 complete before step 4 begins. Nothing readable by the storage
+ * provider ever leaves this machine; `BACKUP_ENCRYPTION_KEY` stays here and is
+ * the only thing that turns the offsite copy back into customer data. The
+ * upload path re-checks this itself (`assertEncryptedArtefact`) rather than
+ * trusting the ordering — a refactor that swaps 3 and 4 reads cleanly and would
+ * publish every Emirates ID in the business.
+ *
+ * Replication is OFF unless BACKUP_S3_BUCKET is set. When it IS set and fails,
+ * this process exits non-zero: see the summary at the end of main(). A backup
+ * that reports success while its only copy is on the machine it protects is not
+ * a backup, and saying otherwise is the same defect as an outbox marking
+ * undelivered messages `success`.
  */
 import { execFileSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
@@ -17,6 +39,13 @@ import { pipeline } from "node:stream/promises";
 import { resolve } from "node:path";
 import { config } from "dotenv";
 import postgres from "postgres";
+import {
+  describeTarget,
+  loadReplicationConfig,
+  loadRetentionPolicy,
+  prune,
+  replicate,
+} from "./backup-replicate.mjs";
 
 /**
  * `.env` only — NEVER `.env.example`.
@@ -228,6 +257,16 @@ async function fingerprint(database) {
 async function main() {
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
 
+  /**
+   * Validate the offsite configuration BEFORE spending minutes on a dump.
+   *
+   * Both of these throw on a half-configured target rather than falling back to
+   * a default, so a typo in a variable name fails here — loudly, in the first
+   * second — instead of producing a backup that quietly stayed home.
+   */
+  const replication = loadReplicationConfig();
+  const retention = loadRetentionPolicy();
+
   // Timestamped, custom format so pg_restore can do selective and parallel
   // restores. Plain SQL dumps cannot.
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
@@ -244,7 +283,59 @@ async function main() {
   unlinkSync(file);
   console.log(`✓ Backup written and encrypted (${sizeMb} MB) → ${artefact}`);
 
+  // ── Offsite replication ───────────────────────────────────────────────────
+  //
+  // The failure is CAPTURED rather than thrown so the restore drill below still
+  // runs — during an incident you want to know both "did it get offsite" and
+  // "does it restore", not just the first thing that broke. It is re-raised as
+  // a non-zero exit at the end of this function, and no line printed between
+  // here and there claims the backup is safe.
+  let replicationError = null;
+  if (replication) {
+    try {
+      await replicate(replication, artefact);
+    } catch (err) {
+      replicationError = err;
+      console.error(`\n✗ REPLICATION FAILED — ${err.message}\n`);
+    }
+  } else {
+    /**
+     * Not configured is a legitimate state (a developer laptop, CI's restore
+     * drill), so this is not an error. It is also not a success, and must never
+     * be printed as one: the sentence has to leave an operator in no doubt that
+     * this file shares a failure domain with the database it came from.
+     */
+    console.log(
+      "\n⚠ REPLICATION: NOT CONFIGURED — nothing was uploaded.\n" +
+        `  This backup exists only at ${outDir} on this machine. The disk that\n` +
+        "  loses the database loses this file with it, and the 15-year UAE\n" +
+        "  retention obligation is not met by local disk.\n" +
+        "  Set BACKUP_S3_BUCKET and friends (see .env.example) to replicate.",
+    );
+  }
+
+  // ── Retention ─────────────────────────────────────────────────────────────
+  if (retention.mode !== "off") {
+    try {
+      await prune({ localDir: outDir, config: replication, policy: retention });
+    } catch (err) {
+      // Pruning is destructive; a partial prune must not be reported as done.
+      replicationError ??= err;
+      console.error(`\n✗ RETENTION FAILED — ${err.message}\n`);
+    }
+  } else {
+    console.log(
+      "\n· RETENTION: BACKUP_PRUNE=off — nothing pruned. Backups accumulate\n" +
+        "  indefinitely, which is the safe direction but not free. See\n" +
+        "  docs/04-security.md § Retention policy.",
+    );
+  }
+
   if (!verify) {
+    if (replicationError) {
+      console.error("\n✗ Backup job FAILED: the local artefact was written, but the offsite step did not complete.\n");
+      process.exit(1);
+    }
     console.log(`\nRun with --verify to prove the backup actually restores.\n`);
     return;
   }
@@ -313,7 +404,23 @@ async function main() {
     console.error(`\n✗ Restore drill FAILED — ${failed} check(s) did not reproduce.\n`);
     process.exit(1);
   }
-  console.log(`\n✓ Restore drill passed. The backup is usable.\n`);
+  console.log(`\n✓ Restore drill passed. The backup is usable.`);
+
+  // The drill passing does not make the job green. "It restores" and "a copy
+  // exists somewhere else" are two different claims, and the failing one gets
+  // the last word so nobody reads the tick above as the overall result.
+  if (replicationError) {
+    console.error(
+      "\n✗ Backup job FAILED: the backup restores, but it never left this machine.\n" +
+        `  ${replicationError.message.split("\n")[0]}\n`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    replication
+      ? `✓ Offsite copy verified at ${describeTarget(replication)}.\n`
+      : "⚠ No offsite copy — replication is not configured.\n",
+  );
 }
 
 main().catch((e) => {

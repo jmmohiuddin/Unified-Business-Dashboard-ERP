@@ -49,7 +49,8 @@ No real money enters the system until every row is true. This is a gate, not a c
 
 - [ ] Schema deploys as committed migrations. `drizzle-kit push` is removed from every script
 - [ ] CI fails on migration drift
-- [ ] A staging environment exists and every migration passes through it first
+- [ ] A staging environment exists and every migration passes through it first. **Done means:** the repository variable `STAGING_ENABLED` is `true`, and a push to `main` produces a green `Staging verdict` check whose summary shows row counts and an unchanged trial balance against a copy of production-shaped data. Design, topology and the setup checklist are [docs/08-staging.md](08-staging.md); the pipeline is `.github/workflows/staging.yml`. **Not done today** — the pipeline is committed and switched off, and says so on every run
+- [ ] No deployment can be confused about which database it is on. **Done means:** `NEXUS_ENV` and `NEXUS_PRODUCTION_DB_HOST` are set on every environment, and `scripts/check-env.mjs` runs in the Vercel build command of both projects, so a preview or staging deployment pointed at the production database fails to build. Today every Vercel preview shares the production database ([docs/08-staging.md §1](08-staging.md#1-why-a-preview-deployment-is-not-staging))
 - [ ] The RLS generator runs as part of migration, and a table without an enforced policy fails CI
 - [ ] The scheduler runs automation, outbox, briefing and KPI snapshots, with a run log visible in the product
 - [ ] A job that did not run when expected raises a dashboard exception
@@ -83,7 +84,7 @@ Run this every time. Especially for routine deploys — checklists exist to prev
 
 - [ ] CI green, including unit, integration, metric snapshot, end-to-end and the 68 security checks
 - [ ] Migration generated, committed and reviewed as SQL, not as a schema diff
-- [ ] Migration applied to staging and the staging smoke test passed
+- [ ] Migration applied to staging and the staging smoke test passed. **Done means:** the `Staging verdict` check is green for this commit — `.github/workflows/staging.yml` migrated the staging branch, deployed the application to the staging project and ran `scripts/smoke.mjs` against the URL it had just deployed. Do not tick this from a green CI run: CI applies migrations to an empty throwaway Postgres, which proves the SQL parses and says nothing about what it does to eleven thousand existing journals
 - [ ] No known critical bug in the release
 - [ ] Rollback plan written **before** deploying, including whether the migration is reversible
 - [ ] If the migration is not reversible, that is stated explicitly and the deploy is scheduled outside business hours
@@ -128,9 +129,15 @@ The last row is not a system metric and that is the point. During the pilot the 
 
 ### 2.5 Migration-specific
 
-- [ ] Row counts before and after, for every table the migration touches
-- [ ] Trial balance before and after — must be identical unless the migration is deliberately financial
-- [ ] For a data-shape migration, a reversal script exists and has been run on staging
+The first two rows are measured automatically by the `migrate` job in
+`.github/workflows/staging.yml` and printed to the run summary. They are exact
+counts, not `n_live_tup` estimates, for every table in the schema rather than
+only the ones the migration was expected to touch — the interesting case is the
+table it touched by accident.
+
+- [ ] Row counts before and after, for every table the migration touches. **Evidence:** the "Row count changes" diff in the staging run summary
+- [ ] Trial balance before and after — must be identical unless the migration is deliberately financial. **Evidence:** the staging run is green. The job fails on any movement; a deliberately financial migration must be re-run from the Actions tab with the `financial_migration` input ticked, which records the intent against that run
+- [ ] For a data-shape migration, a reversal script exists and has been run on staging. **Still manual** — nothing generates or runs a down script. Write it, run it against the staging branch by hand, and confirm the trial balance and row counts return to the baseline the same run printed
 - [ ] For a destructive migration, a fresh verified backup exists, taken within the hour
 
 * * *
@@ -152,6 +159,27 @@ Moving the property portfolio — apartments and parking — onto Nexus. This is
 | 5 | Close the month inside Nexus. File from it | Month closed and filed |
 
 Cutover happens on the first of a month. Mid-month cutover means apportioning a partial period in the middle of an already risky operation, for no benefit.
+
+**Weeks −2 and −1 have a hard prerequisite.** "A staging copy" means the staging
+branch described in [docs/08-staging.md](08-staging.md), refreshed from
+production and put through the anonymisation pass in its §4 before anyone
+connects to it. Both gates are the primary mitigation for the audit's critical
+risk **R2** — *migrated opening balances are wrong* — and neither can be run
+against a Vercel preview, because previews share the production database.
+
+Two things must therefore be true before week −2 begins, and both are still open:
+
+- the staging environment is stood up — [docs/08-staging.md §6](08-staging.md#6-owner-checklist), checklist items 1–10;
+- the anonymisation pass exists — checklist item 7. Until it does, **no
+  production data may be copied to staging**, and a synthetically seeded staging
+  branch is enough to prove a migration but is not enough for a reconciliation,
+  which by definition needs the real figures.
+
+**Done, for both weeks:** the dry-run ran against the staging branch, and §3.3's
+table is completed and signed against the trial balance that branch produced.
+"Dry-run against production" is not a substitute and must not be recorded as
+one — a dry-run that can only be performed on the live ledger is the risk R2
+exists to name.
 
 ### 3.2 What gets migrated, in order
 
@@ -462,7 +490,7 @@ Operational items that need an answer from outside the team.
 | Q-5 | Whether a cleared UAE cheque can be returned | The group's bank | Cheque state machine |
 | Q-6 | Which entities hold which licences, and their revenue against thresholds | Owner and accountant | E-invoicing timing |
 | Q-7 | Exact WPS SIF layout | The group's WPS agent | Payroll run |
-| Q-8 | Whether the current hosting satisfies PDPL cross-border transfer | Data protection adviser | Real data entering the system |
+| Q-8 | Whether the current hosting satisfies PDPL cross-border transfer | Data protection adviser | Real data entering the system — **and the staging branch**, which is a second copy of the same records in the same region and inherits the question rather than answering it ([docs/08-staging.md §3](08-staging.md#3-topology)) |
 | Q-10 | Owner ledger staleness and materiality thresholds | Owner and accountant | Cash and owner-ledger defaults |
 | Q-11 | Cash variance threshold requiring manager acknowledgement | Owner | Day-close default |
 | Q-12 | Whether inter-business services bill at cost or at market | Owner and tax adviser | Inter-business transfer defaults |
