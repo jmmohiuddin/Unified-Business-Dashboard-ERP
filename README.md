@@ -35,9 +35,9 @@ npm test           # 294 checks: unit, metrics, writes, end-to-end, security
 
 | | |
 |---|---|
-| **96 tables** | 90 tenant-isolated + 6 global, across 10 bounded contexts |
+| **101 tables** | 95 tenant-isolated + 6 global, across 10 bounded contexts |
 | **Tenant isolation** | PostgreSQL RLS, `FORCE`d, generated from the schema — cross-tenant read *and* write proven blocked |
-| **Double-entry ledger** | 28,077 journal lines, balance enforced by a database trigger |
+| **Double-entry ledger** | 28,106 journal lines, balance enforced by a database trigger |
 | **26 metrics** | Typed, permission-checked semantic layer — full dashboard sweep in **~150 ms** |
 | **24 routes** | Dashboard, businesses, receivables, purchases, rentals, cheques, services, salon, inventory, CRM, compliance, VAT201, P&L, gratuity, inbox, security settings, public API |
 | **16 roles** | Verified: a barber sees only the salon and is denied revenue figures |

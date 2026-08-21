@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
 import { formatMoney } from "@nexus/core";
 import { requireSession } from "@/lib/session";
@@ -7,7 +7,7 @@ import { Card, CardHeader } from "@/components/ui";
 import { ActionForm } from "@/components/action-form";
 import { completeJobAction } from "@/lib/actions";
 import {
-  DataTable, FilterTabs, PageHeader, StatStrip, StatusPill, TableEmpty,
+  DataTable, FilterTabs, PageHeader, Pagination, StatStrip, StatusPill, TableEmpty, pageSlice,
 } from "@/components/page";
 
 export const dynamic = "force-dynamic";
@@ -16,6 +16,13 @@ const TRADE_LABEL: Record<string, string> = {
   ac_service: "AC", plumbing: "Plumbing", electrical: "Electrical",
   handyman: "Handyman", cleaning: "Cleaning",
 };
+
+const TABS = ["open", "breached", "internal", "invoiced", "all"] as const;
+type Tab = (typeof TABS)[number];
+
+/** Statuses that mean a job is still live. Shared by the tab, the badge and the
+ *  row-level Complete button so they can never drift apart. */
+const OPEN_STATUSES = ["request", "quoted", "scheduled", "dispatched", "in_progress", "on_hold"];
 
 /**
  * Field service job board.
@@ -27,23 +34,76 @@ const TRADE_LABEL: Record<string, string> = {
  * Two things are deliberately prominent: SLA breach, which predicts complaints
  * better than any other signal, and per-job margin, which is the number that
  * tells the owner which trade is actually worth doing.
+ *
+ * THIS SCREEN TRUNCATED TWICE. It fetched 400 jobs, filtered that array in
+ * JavaScript, then rendered `.slice(0, 80)` of the result and printed "Showing
+ * 80 of N" where N was itself a count of the 400 — a number about a sample,
+ * labelled as a number about the business. Both cuts are gone: the filter and
+ * the count are SQL, and the 80 is a real page of a real total.
+ *
+ * `open_service_requests` also declares its drill-down as `/services?status=open`
+ * while the tab chips write `?filter=…`, so the tile the owner clicked landed
+ * them on the default board rather than on the open jobs it promised. Both
+ * spellings are read.
  */
 export default async function ServicesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string; trade?: string }>;
+  searchParams: Promise<{
+    filter?: string; status?: string; trade?: string; page?: string; per?: string;
+  }>;
 }) {
   const session = await requireSession();
-  const { filter = "open", trade } = await searchParams;
+  const {
+    filter, status: rawStatus, trade, page: rawPage, per: rawPer,
+  } = await searchParams;
   const today = resolveToday(session.timezone);
   const ccy = session.baseCurrency;
+
+  // The tabs write `filter`; `status` is the metric registry's spelling and
+  // only arrives on a fresh drill-down.
+  const wanted = filter ?? rawStatus ?? "open";
+  const tab: Tab = (TABS as readonly string[]).includes(wanted) ? (wanted as Tab) : "open";
 
   const m = await loadMetrics(session, [{ metricId: "open_service_requests" }]);
   const open = metric(m, "open_service_requests");
 
-  const { jobs, byTrade, techs } = await withTenant(
+  const breachedSql = sql`(j.complete_by < now() AND j.status NOT IN ('completed','invoiced','cancelled'))`;
+  const openSql = sql`j.status IN ('request','quoted','scheduled','dispatched','in_progress','on_hold')`;
+  const internalSql = sql`j.unit_id IS NOT NULL`;
+
+  const tabClause: SQL =
+    tab === "open" ? sql` AND ${openSql}`
+    : tab === "breached" ? sql` AND ${breachedSql}`
+    : tab === "invoiced" ? sql` AND j.status = 'invoiced'`
+    : tab === "internal" ? sql` AND ${internalSql}`
+    : sql``;
+  const tradeClause: SQL = trade ? sql` AND j.service_kind = ${trade}` : sql``;
+
+  const { jobs, byTrade, techs, facets, slice } = await withTenant(
     { tenantId: session.tenantId, userId: session.userId },
     async (tx) => {
+      /* One aggregate pass: every tab badge, the two stat-strip counts that used
+         to be measured off the fetched array, and the pager total. The trade
+         filter is included because a badge that ignores the active trade would
+         promise rows the list cannot show. */
+      const [f] = await tx.execute<{
+        every: number; open: number; breached: number; invoiced: number;
+        internal: number; active: number;
+      }>(sql`
+        SELECT COUNT(*)::int AS every,
+               COUNT(*) FILTER (WHERE ${openSql})::int AS open,
+               COUNT(*) FILTER (WHERE ${breachedSql})::int AS breached,
+               COUNT(*) FILTER (WHERE j.status = 'invoiced')::int AS invoiced,
+               COUNT(*) FILTER (WHERE ${internalSql})::int AS internal,
+               COUNT(*) FILTER (WHERE TRUE ${tabClause})::int AS active
+          FROM jobs j
+         WHERE TRUE ${tradeClause}
+      `);
+      const facets = f ?? { every: 0, open: 0, breached: 0, invoiced: 0, internal: 0, active: 0 };
+
+      const slice = pageSlice({ page: rawPage, per: rawPer }, facets.active);
+
       const jobs = await tx.execute<{
         id: string; job_number: string; service_kind: string; title: string;
         status: string; priority: string; party: string | null; site: string | null;
@@ -65,10 +125,11 @@ export default async function ServicesPage({
             SELECT employee_id FROM job_visits WHERE job_id = j.id ORDER BY seq LIMIT 1
           ) v ON true
           LEFT JOIN employees e ON e.id = v.employee_id
-         ORDER BY
-           (j.complete_by < now() AND j.status NOT IN ('completed','invoiced','cancelled')) DESC,
-           j.reported_at DESC
-         LIMIT 400
+         WHERE TRUE ${tabClause} ${tradeClause}
+         -- Trailing j.id makes the sort total. Jobs are reported in bursts and
+         -- tie on reported_at; without it a page boundary can repeat or drop one.
+         ORDER BY ${breachedSql} DESC, j.reported_at DESC, j.id
+         LIMIT ${slice.perPage} OFFSET ${slice.offset}
       `);
 
       const byTrade = await tx.execute<{ service_kind: string; n: number; revenue: string; cost: string }>(sql`
@@ -90,21 +151,12 @@ export default async function ServicesPage({
          GROUP BY e.full_name ORDER BY 2 DESC
       `);
 
-      return { jobs, byTrade, techs };
+      return { jobs, byTrade, techs, facets, slice };
     },
   );
 
-  const OPEN = ["request", "quoted", "scheduled", "dispatched", "in_progress", "on_hold"];
-  let filtered =
-    filter === "open" ? jobs.filter((j) => OPEN.includes(j.status))
-    : filter === "breached" ? jobs.filter((j) => j.breached)
-    : filter === "invoiced" ? jobs.filter((j) => j.status === "invoiced")
-    : filter === "internal" ? jobs.filter((j) => j.unit_code !== null)
-    : jobs;
-  if (trade) filtered = filtered.filter((j) => j.service_kind === trade);
-
-  const breachedCount = jobs.filter((j) => j.breached).length;
-  const internalCount = jobs.filter((j) => j.unit_code !== null).length;
+  const breachedCount = facets.breached;
+  const internalCount = facets.internal;
   const revenue90 = byTrade.reduce((t, r) => t + Number(r.revenue), 0);
   const cost90 = byTrade.reduce((t, r) => t + Number(r.cost), 0);
 
@@ -213,19 +265,23 @@ export default async function ServicesPage({
           action={
             <FilterTabs
               basePath="/services"
-              active={filter}
+              active={tab}
+              defaultKey="open"
+              // The trade travels with the tab, otherwise narrowing an AC board
+              // to "Past SLA" silently widens it back to all five trades.
+              params={{ trade }}
               options={[
-                { key: "open", label: "Open", count: jobs.filter((j) => OPEN.includes(j.status)).length },
-                { key: "breached", label: "Past SLA", count: breachedCount },
-                { key: "internal", label: "Own units", count: internalCount },
-                { key: "invoiced", label: "Invoiced", count: jobs.filter((j) => j.status === "invoiced").length },
-                { key: "all", label: "All", count: jobs.length },
+                { key: "open", label: "Open", count: facets.open },
+                { key: "breached", label: "Past SLA", count: facets.breached },
+                { key: "internal", label: "Own units", count: facets.internal },
+                { key: "invoiced", label: "Invoiced", count: facets.invoiced },
+                { key: "all", label: "All", count: facets.every },
               ]}
             />
           }
         />
         <DataTable
-          rows={filtered.slice(0, 80)}
+          rows={jobs}
           rowKey={(j) => j.id}
           empty={<TableEmpty title="No jobs match" detail="Try a different filter." />}
           columns={[
@@ -293,18 +349,19 @@ export default async function ServicesPage({
             {
               key: "do", header: "", numeric: true,
               render: (j) =>
-                OPEN.includes(j.status) ? (
+                OPEN_STATUSES.includes(j.status) ? (
                   <ActionForm action={completeJobAction} submitLabel="Complete"
                     pendingLabel="…" variant="ghost" hidden={{ jobId: j.id }} />
                 ) : null,
             },
           ]}
         />
-        {filtered.length > 80 && (
-          <p className="text-2xs text-subtle px-4 pb-3">
-            Showing 80 of {filtered.length}. Pagination lands with the dispatch board in Phase 2.
-          </p>
-        )}
+        <Pagination
+          slice={slice}
+          basePath="/services"
+          params={{ filter: tab === "open" ? undefined : tab, trade }}
+          noun="jobs"
+        />
       </Card>
     </div>
   );

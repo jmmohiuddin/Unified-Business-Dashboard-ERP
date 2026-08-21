@@ -203,6 +203,123 @@ export const taxCodes = pgTable(
   (t) => [uniqueIndex("tax_codes_uq").on(t.tenantId, t.code)],
 );
 
+/**
+ * A VAT201 return, as filed.
+ *
+ * The VAT screen used to recompute the position from live data on every
+ * request, which has three consequences that only look small until an
+ * inspection:
+ *
+ *  1. **A filed quarter cannot be reproduced.** A credit note raised in
+ *     September against a July invoice changes what July's query returns, so
+ *     re-opening Q3 shows a different return from the one submitted. The FTA's
+ *     question at an audit is "why does your system not agree with your
+ *     filing", and "because it recomputes" is not an answer.
+ *  2. **The apportionment in force is lost.** The recovery ratio, the method
+ *     and — critically — the *basis* the ratio was computed on (see
+ *     `APPORTIONMENT_BASIS_IN_USE`, which is an open question for the tax
+ *     adviser) are properties of the moment of filing. If that question is
+ *     answered differently later, every return filed before the answer must
+ *     still be readable on the basis that produced it.
+ *  3. **There is nothing to retain.** UAE VAT records must be kept for 5 years,
+ *     and 15 for real estate (PRD-02 §966). A query is not a record.
+ *
+ * So a return is a row: computed once, frozen at filing, and never recomputed.
+ * Box figures are stored individually rather than as a JSON blob because they
+ * are money and the money columns are `numeric(18,4)` — a blob would make them
+ * doubles on the way in and out.
+ *
+ * Rows are never hard-deleted; `deletedAt` in `timestamps` is the only removal.
+ */
+export const vatReturns = pgTable(
+  "vat_returns",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** Tax period as the FTA labels it, e.g. "2026-Q3". One row per period. */
+    periodLabel: varchar("period_label", { length: 20 }).notNull(),
+    periodStart: date("period_start").notNull(),
+    periodEnd: date("period_end").notNull(),
+    /** Statutory filing deadline: 28 days after the period end. */
+    dueOn: date("due_on"),
+    /**
+     * `draft` while the quarter is open and the figures still move; `filed`
+     * once submitted on the FTA portal, after which the row is the record of
+     * what was submitted and must not be recomputed. A varchar rather than an
+     * enum so this table does not have to reach into the shared enum module.
+     */
+    status: varchar("status", { length: 16 }).notNull().default("draft"),
+
+    /** Emirate box 1 is reported under. The FTA splits box 1 1a–1g. */
+    emirate: varchar("emirate", { length: 40 }),
+
+    // ── Apportionment in force at the moment of filing ──────────────────────
+    /** "standard" | "floorspace" — `ApportionmentMethod["kind"]`. */
+    apportionmentMethod: varchar("apportionment_method", { length: 20 })
+      .notNull()
+      .default("standard"),
+    /**
+     * Which number the ratio was computed FROM: "supplies_value",
+     * "input_tax_value" or "floorspace". Stored per return because the correct
+     * answer for the standard method is an open question, and returns filed
+     * either side of the answer must remain individually interpretable.
+     */
+    apportionmentBasis: varchar("apportionment_basis", { length: 20 })
+      .notNull()
+      .default("supplies_value"),
+    /** The FTA's written approval, where a special method was used. */
+    ftaApprovalReference: varchar("fta_approval_reference", { length: 60 }),
+    /** Recoverable share of residual input VAT, as a fraction. */
+    recoveryRatio: rate("recovery_ratio").notNull().default("1"),
+
+    // ── Boxes ──────────────────────────────────────────────────────────────
+    standardRatedSupplies: money("standard_rated_supplies").notNull().default("0"),
+    outputVat: money("output_vat").notNull().default("0"),
+    zeroRatedSupplies: money("zero_rated_supplies").notNull().default("0"),
+    exemptSupplies: money("exempt_supplies").notNull().default("0"),
+    reverseChargeSupplies: money("reverse_charge_supplies").notNull().default("0"),
+    reverseChargeOutputVat: money("reverse_charge_output_vat").notNull().default("0"),
+    /** Input VAT wholly attributable to taxable supplies (account 1600). */
+    directlyAttributableInput: money("directly_attributable_input").notNull().default("0"),
+    /** The shared-overhead pool this return apportioned (account 1610). */
+    residualInput: money("residual_input").notNull().default("0"),
+    /** Of that pool, what this return actually reclaimed. */
+    recoverableResidual: money("recoverable_residual").notNull().default("0"),
+    /** Input VAT wholly attributable to exempt supplies (account 5720). */
+    exemptAttributableInput: money("exempt_attributable_input").notNull().default("0"),
+    totalRecoverableInput: money("total_recoverable_input").notNull().default("0"),
+    irrecoverableInput: money("irrecoverable_input").notNull().default("0"),
+    netVatDue: money("net_vat_due").notNull().default("0"),
+
+    /**
+     * The annual actual-use adjustment applied to this period, where the
+     * wash-up landed on it. Null on every period that is not the one carrying
+     * the year's adjustment.
+     */
+    washupAdjustment: money("washup_adjustment"),
+    washupJournalId: uuid("washup_journal_id").references(() => journals.id, {
+      onDelete: "set null",
+    }),
+
+    /** The engine's own notes, frozen with the figures they explain. */
+    notes: metadata("notes"),
+
+    filedAt: timestamp("filed_at", { withTimezone: true }),
+    filedByUserId: uuid("filed_by_user_id").references(() => users.id, {
+      onDelete: "set null",
+    }),
+    /** The FTA portal's acknowledgement reference for the submission. */
+    ftaSubmissionReference: varchar("fta_submission_reference", { length: 60 }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("vat_returns_period_uq").on(t.tenantId, t.periodLabel),
+    index("vat_returns_status_idx").on(t.tenantId, t.status, t.periodStart),
+  ],
+);
+
 export const bankAccounts = pgTable(
   "bank_accounts",
   {

@@ -49,6 +49,115 @@ export const tenants = pgTable(
 );
 
 /**
+ * Legal entity = the registered company that files returns and issues invoices.
+ *
+ * A business unit is an *operating* boundary — its own P&L, its own numbering
+ * series, its own modules. A legal entity is a *statutory* one: it holds the
+ * trade licence, it is the taxable person for corporate tax, and it is the
+ * party whose Tax Identification Number appears on a tax invoice. The two are
+ * not the same thing and the schema conflated them: TRN, trade licence,
+ * establishment card and the free-zone flags all hung off `business_units`, so
+ * two businesses trading under one licence were forced to duplicate the licence
+ * on both rows with nothing to say they were the same registration.
+ *
+ * Introducing this table now, before any of it is needed, is the cheap move.
+ * Two things become configuration rather than a rebuild:
+ *
+ *   · **E-invoicing (FR-C07).** PINT AE identifies the supplier by the entity
+ *     TIN. Without an entity there is nowhere correct to put it, and the
+ *     mandate has a hard date: an accredited service provider appointed by
+ *     31 Mar 2027, live 1 Jul 2027. See `packages/core/src/einvoice/`.
+ *   · **Corporate tax (FR-C04).** The AED 375,000 nil band and Small Business
+ *     Relief are assessed per taxable person, not per business. Assessing them
+ *     across a portfolio of seven businesses that are three companies gives the
+ *     wrong number in both directions.
+ *
+ * ADDITIVE ON PURPOSE. The equivalent columns on `business_units` are left in
+ * place and still populated — see the deprecation note there. Moving live
+ * licence and TRN data in the same wave that introduces the table would put a
+ * data migration and a schema migration in one step, and the columns are read
+ * today by the compliance register and the VAT engine.
+ */
+export const legalEntities = pgTable(
+  "legal_entities",
+  {
+    id: pk(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    code: varchar("code", { length: 20 }).notNull(),
+    /** As registered on the trade licence, which is what must appear on an
+     *  invoice — not the trading name the customer knows. */
+    legalName: varchar("legal_name", { length: 200 }).notNull(),
+    tradeName: varchar("trade_name", { length: 200 }),
+
+    /**
+     * Tax Identification Number — the identifier the e-invoice carries.
+     *
+     * In the UAE this is the 15-digit VAT TRN. It is deliberately NOT named
+     * `tax_registration_no`: PINT AE calls the supplier identifier a TIN, other
+     * jurisdictions issue one under other names, and the field the serialiser
+     * reads should be named for the role it plays in the document rather than
+     * for the local paperwork that happens to supply it.
+     *
+     * Nullable, because an entity below the AED 375,000 registration threshold
+     * genuinely has none, and a readiness screen that cannot distinguish
+     * "not recorded" from "not required" is worthless. WF-05 §10.3 shows this
+     * exact count — "TINs recorded 2 of 3".
+     */
+    taxIdentificationNumber: varchar("tax_identification_number", { length: 20 }),
+    taxRegisteredOn: date("tax_registered_on"),
+    /** Corporate tax registration is a separate number from the VAT TRN. */
+    corporateTaxRegistrationNo: varchar("corporate_tax_registration_no", { length: 30 }),
+
+    tradeLicenseNo: varchar("trade_license_no", { length: 40 }),
+    licensingAuthority: varchar("licensing_authority", { length: 80 }),
+    tradeLicenseExpiry: date("trade_license_expiry"),
+    establishmentCardNo: varchar("establishment_card_no", { length: 40 }),
+    establishmentCardExpiry: date("establishment_card_expiry"),
+    isFreeZone: boolean("is_free_zone").notNull().default(false),
+    isDesignatedZone: boolean("is_designated_zone").notNull().default(false),
+
+    /**
+     * Fiscal year end, held per entity rather than per tenant.
+     *
+     * `tenants.fiscal_year_start_month` assumes the whole portfolio shares one
+     * year. Entities acquired or incorporated separately routinely do not, and
+     * the corporate tax period follows the entity.
+     */
+    fiscalYearEndMonth: integer("fiscal_year_end_month").notNull().default(12),
+    fiscalYearEndDay: integer("fiscal_year_end_day").notNull().default(31),
+
+    registeredAddress: text("registered_address"),
+    emirate: varchar("emirate", { length: 40 }).notNull().default("Dubai"),
+    countryCode: varchar("country_code", { length: 2 }).notNull().default("AE"),
+
+    /**
+     * The appointed accredited service provider, or NULL for "not appointed".
+     *
+     * NULL is the honest default and the one the readiness screen counts. The
+     * appointment is a commercial act with a statutory deadline, so recording
+     * it is a fact about the business, not a piece of application config — an
+     * environment variable would be lost on the next deploy and could not be
+     * shown to the owner as a checklist row.
+     */
+    einvoiceProviderKey: varchar("einvoice_provider_key", { length: 40 }),
+    einvoiceProviderAppointedOn: date("einvoice_provider_appointed_on"),
+    /** First date this entity actually transmits. Before it, documents are
+     *  serialised and stored but never sent. */
+    einvoiceLiveFrom: date("einvoice_live_from"),
+
+    isActive: boolean("is_active").notNull().default(true),
+    settings: metadata("settings"),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("legal_entities_tenant_code_uq").on(t.tenantId, t.code),
+    index("legal_entities_tenant_idx").on(t.tenantId),
+  ],
+);
+
+/**
  * Business unit = one of the owner's businesses (the salon, the mobile shop).
  * It is a *legal-ish* boundary: it has its own P&L, its own numbering series and
  * its own enabled modules, but shares the customer base and the ledger.
@@ -64,11 +173,41 @@ export const businessUnits = pgTable(
     name: varchar("name", { length: 200 }).notNull(),
     kind: businessKind("kind").notNull(),
     currency: currencyCode("currency").notNull().default("AED"),
+
+    /**
+     * The registered company this business trades under.
+     *
+     * Nullable during the transition only. Every active business unit must end
+     * up pointing at a `legal_entities` row — an invoice issued by a business
+     * with no entity has no TIN to carry, and from 1 Jul 2027 that is not a
+     * defect, it is an unfilable document. The 0003 migration backfills one
+     * entity per business unit from the licence data already on this row, which
+     * is the only mapping the data supports; consolidating several businesses
+     * under one licence is Q-6 and needs the owner, not a guess in a migration.
+     *
+     * `ON DELETE SET NULL`, not cascade: deleting a legal entity must never
+     * take a business and its ledger with it.
+     */
+    legalEntityId: uuid("legal_entity_id").references(() => legalEntities.id, {
+      onDelete: "set null",
+    }),
+
     /** A separate legal entity files its own VAT return and is its own taxable
      *  person for corporate tax. Drives inter-company posting and whether Small
-     *  Business Relief is assessed per entity or per group. */
+     *  Business Relief is assessed per entity or per group.
+     *
+     *  DEPRECATED by `legal_entity_id`. A boolean cannot say *which* entity, so
+     *  it cannot answer "these two businesses are one taxable person" — the
+     *  question corporate tax and e-invoicing both ask. Still read by
+     *  `uae-metrics.ts` and the compliance register; remove only once those
+     *  read the entity. */
     isSeparateLegalEntity: boolean("is_separate_legal_entity").notNull().default(false),
-    /** UAE VAT Tax Registration Number — 15 digits, printed on every tax invoice. */
+    /** UAE VAT Tax Registration Number — 15 digits, printed on every tax invoice.
+     *
+     *  DEPRECATED by `legal_entities.tax_identification_number`. The TRN belongs
+     *  to the registration, not to the shop floor: two businesses under one
+     *  licence share one TRN and this column forces it to be stored twice with
+     *  nothing to keep the copies equal. */
     taxRegistrationNo: varchar("tax_registration_no", { length: 64 }),
 
     /**
@@ -76,6 +215,11 @@ export const businessUnits = pgTable(
      * bank accounts freeze, visas cannot be renewed, and fines accrue daily.
      * Tracking the expiry is not administrative trivia — it is an operational
      * control, and it is why `licence_expiry` is a dashboard metric.
+     *
+     * DEPRECATED by the matching columns on `legal_entities`, for the same
+     * reason as the TRN above: a licence is issued to a company. Left in place
+     * and still authoritative this wave — `compliance/page.tsx` and the
+     * `compliance_watchlist` metric both read them.
      */
     tradeLicenseNo: varchar("trade_license_no", { length: 40 }),
     licensingAuthority: varchar("licensing_authority", { length: 80 }),
@@ -198,10 +342,20 @@ export const exchangeRates = pgTable(
 
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   businessUnits: many(businessUnits),
+  legalEntities: many(legalEntities),
+}));
+
+export const legalEntitiesRelations = relations(legalEntities, ({ one, many }) => ({
+  tenant: one(tenants, { fields: [legalEntities.tenantId], references: [tenants.id] }),
+  businessUnits: many(businessUnits),
 }));
 
 export const businessUnitsRelations = relations(businessUnits, ({ one, many }) => ({
   tenant: one(tenants, { fields: [businessUnits.tenantId], references: [tenants.id] }),
+  legalEntity: one(legalEntities, {
+    fields: [businessUnits.legalEntityId],
+    references: [legalEntities.id],
+  }),
   locations: many(locations),
   modules: many(businessUnitModules),
 }));

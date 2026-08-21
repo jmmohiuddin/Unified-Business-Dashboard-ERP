@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
 import { formatMoney } from "@nexus/core";
 import { requireSession } from "@/lib/session";
@@ -7,10 +7,22 @@ import { Card, CardHeader } from "@/components/ui";
 import { ActionForm, Disclosure, Field } from "@/components/action-form";
 import { adjustStockAction } from "@/lib/actions";
 import {
-  BuTag, DataTable, FilterTabs, PageHeader, StatStrip, TableEmpty,
+  BuTag, DataTable, FilterTabs, PageHeader, Pagination, StatStrip, TableEmpty, pageSlice,
+  type PageKeys,
 } from "@/components/page";
 
 export const dynamic = "force-dynamic";
+
+const TABS = ["all", "low", "serialised"] as const;
+type Tab = (typeof TABS)[number];
+
+/**
+ * Two paginated lists share this route, so they cannot share pager parameters:
+ * one `?page=` would move both, and turning to page 3 of the IMEI register
+ * would silently turn the stock table too.
+ */
+const STOCK_KEYS: PageKeys = { page: "page", per: "per" };
+const IMEI_KEYS: PageKeys = { page: "ipage", per: "iper" };
 
 /**
  * Inventory: stock, reorder proposals and the IMEI register.
@@ -19,16 +31,34 @@ export const dynamic = "force-dynamic";
  * four units of a fast-moving charger is more urgent than two of something that
  * sells twice a year, and quantity-ranked reorder lists get this backwards every
  * time.
+ *
+ * The stock table used to be fetched whole and then filtered in JavaScript, and
+ * the IMEI register stopped dead at 60 rows with nothing on screen saying so.
+ * Both are paged in SQL now. The stock filters are the interesting case: "low"
+ * is a predicate on an AGGREGATE (`SUM(on_hand) - SUM(reserved)` against the
+ * item's reorder point), so it lives in `HAVING`, not `WHERE` — which is also
+ * why its count has to be taken over the grouped set rather than over rows.
  */
 export default async function InventoryPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string }>;
+  searchParams: Promise<{
+    filter?: string; page?: string; per?: string; ipage?: string; iper?: string;
+  }>;
 }) {
   const session = await requireSession();
-  const { filter = "all" } = await searchParams;
+  const {
+    filter, page: rawPage, per: rawPer, ipage: rawIPage, iper: rawIPer,
+  } = await searchParams;
   const today = resolveToday(session.timezone);
   const ccy = session.baseCurrency;
+
+  const tab: Tab = (TABS as readonly string[]).includes(filter ?? "") ? (filter as Tab) : "all";
+  const available = sql`SUM(sl.on_hand) - SUM(sl.reserved)`;
+  const isLow = sql`i.reorder_point IS NOT NULL AND ${available} <= i.reorder_point`;
+
+  const stockWhere: SQL = tab === "serialised" ? sql` AND i.tracking_mode = 'serial'` : sql``;
+  const stockHaving: SQL = tab === "low" ? sql` HAVING ${isLow}` : sql``;
 
   const m = await loadMetrics(session, [
     { metricId: "inventory_value" },
@@ -37,9 +67,34 @@ export default async function InventoryPage({
   const value = metric(m, "inventory_value");
   const lowStock = metric(m, "low_stock_items");
 
-  const { stock, serials, warehouses, countableWarehouses, countableItems } = await withTenant(
+  const {
+    stock, stockFacets, stockSlice, serials, imeiSlice, warehouses,
+    countableWarehouses, countableItems, inStockImei, soldImei,
+  } = await withTenant(
     { tenantId: session.tenantId, userId: session.userId },
     async (tx) => {
+      /* Counted over the grouped set, because an item held in three warehouses
+         is one row on this screen and three rows in `stock_levels`. Counting
+         the base table would overstate every badge and hand the pager a total
+         it could never reach. */
+      const [sf] = await tx.execute<{ every: number; low: number; serialised: number }>(sql`
+        SELECT COUNT(*)::int AS every,
+               COUNT(*) FILTER (WHERE z.low)::int AS low,
+               COUNT(*) FILTER (WHERE z.tracking = 'serial')::int AS serialised
+          FROM (
+            SELECT i.tracking_mode::text AS tracking, (${isLow}) AS low
+              FROM stock_levels sl
+              JOIN items i ON i.id = sl.item_id
+             GROUP BY i.id, i.tracking_mode, i.reorder_point
+          ) z
+      `);
+      const stockFacets = sf ?? { every: 0, low: 0, serialised: 0 };
+      const stockTotal =
+        tab === "low" ? stockFacets.low
+        : tab === "serialised" ? stockFacets.serialised
+        : stockFacets.every;
+      const stockSlice = pageSlice({ page: rawPage, per: rawPer }, stockTotal, { keys: STOCK_KEYS });
+
       const stock = await tx.execute<{
         id: string; name: string; sku: string | null; tracking: string;
         on_hand: string; reserved: string; avg_cost: string; sale_price: string;
@@ -55,10 +110,20 @@ export default async function InventoryPage({
           JOIN items i ON i.id = sl.item_id
           JOIN warehouses w ON w.id = sl.warehouse_id
           LEFT JOIN business_units b ON b.id = i.business_unit_id
+         WHERE TRUE ${stockWhere}
          GROUP BY i.id, i.name, i.sku, i.tracking_mode, i.sale_price, i.reorder_point,
                   b.name, b.color_token
-         ORDER BY SUM(sl.on_hand * sl.avg_cost) DESC
+         ${stockHaving}
+         -- Trailing i.id makes the sort total: items with no stock all value at
+         -- zero and would otherwise reshuffle between page requests.
+         ORDER BY SUM(sl.on_hand * sl.avg_cost) DESC, i.id
+         LIMIT ${stockSlice.perPage} OFFSET ${stockSlice.offset}
       `);
+
+      const [ic] = await tx.execute<{ n: number }>(sql`SELECT COUNT(*)::int AS n FROM serial_units`);
+      const imeiSlice = pageSlice(
+        { ipage: rawIPage, iper: rawIPer }, ic?.n ?? 0, { keys: IMEI_KEYS },
+      );
 
       const serials = await tx.execute<{
         id: string; serial_no: string; item: string; status: string;
@@ -71,8 +136,8 @@ export default async function InventoryPage({
           FROM serial_units su
           JOIN items i ON i.id = su.item_id
           LEFT JOIN parties p ON p.id = su.sold_to_party_id
-         ORDER BY su.status, su.sold_on DESC NULLS LAST
-         LIMIT 60
+         ORDER BY su.status, su.sold_on DESC NULLS LAST, su.id
+         LIMIT ${imeiSlice.perPage} OFFSET ${imeiSlice.offset}
       `);
 
       const warehouses = await tx.execute<{
@@ -88,6 +153,8 @@ export default async function InventoryPage({
       `);
 
       // Ids for the stock-count form (the display query above joins for codes).
+      // Bounded on purpose: these fill <select> elements, not lists the user
+      // browses, so a pager would be the wrong affordance for them.
       const countableWarehouses = await tx.execute<{ id: string; name: string; bu: string }>(sql`
         SELECT w.id, w.name, w.business_unit_id AS bu FROM warehouses w
          WHERE w.is_active = true ORDER BY w.name
@@ -98,23 +165,22 @@ export default async function InventoryPage({
          ORDER BY name LIMIT 200
       `);
 
-      return { stock, serials, warehouses, countableWarehouses, countableItems };
+      /* Handset counts for the stat strip. They used to be measured off the
+         60-row page of the register below, so both figures were really "…of the
+         60 most recent", labelled as totals. */
+      const [imei] = await tx.execute<{ in_stock: number; sold: number }>(sql`
+        SELECT COUNT(*) FILTER (WHERE status = 'in_stock')::int AS in_stock,
+               COUNT(*) FILTER (WHERE status = 'sold')::int AS sold
+          FROM serial_units
+      `);
+
+      return {
+        stock, stockFacets, stockSlice, serials, imeiSlice, warehouses,
+        countableWarehouses, countableItems,
+        inStockImei: imei?.in_stock ?? 0, soldImei: imei?.sold ?? 0,
+      };
     },
   );
-
-  const filtered =
-    filter === "low"
-      ? stock.filter(
-          (s) =>
-            s.reorder_point !== null &&
-            Number(s.on_hand) - Number(s.reserved) <= Number(s.reorder_point),
-        )
-      : filter === "serialised"
-        ? stock.filter((s) => s.tracking === "serial")
-        : stock;
-
-  const inStockImei = serials.filter((s) => s.status === "in_stock").length;
-  const soldImei = serials.filter((s) => s.status === "sold").length;
 
   return (
     <div className="px-4 lg:px-6 py-4 lg:py-6 max-w-[1400px] mx-auto space-y-5">
@@ -256,17 +322,20 @@ export default async function InventoryPage({
           action={
             <FilterTabs
               basePath="/inventory"
-              active={filter}
+              active={tab}
+              // The IMEI register's position rides along, so filtering the
+              // stock table does not reset the other list on the page.
+              params={{ ipage: rawIPage, iper: rawIPer }}
               options={[
-                { key: "all", label: "All", count: stock.length },
-                { key: "low", label: "Low", count: lowStock?.value ?? 0 },
-                { key: "serialised", label: "Serialised", count: stock.filter((s) => s.tracking === "serial").length },
+                { key: "all", label: "All", count: stockFacets.every },
+                { key: "low", label: "Low", count: stockFacets.low },
+                { key: "serialised", label: "Serialised", count: stockFacets.serialised },
               ]}
             />
           }
         />
         <DataTable
-          rows={filtered}
+          rows={stock}
           rowKey={(s) => s.id}
           empty={<TableEmpty title="No items match" detail="Try a different filter." />}
           columns={[
@@ -313,6 +382,18 @@ export default async function InventoryPage({
               render: (s) => formatMoney(Number(s.on_hand) * Number(s.avg_cost), ccy, 0),
             },
           ]}
+        />
+        <Pagination
+          slice={stockSlice}
+          basePath="/inventory"
+          params={{
+            filter: tab === "all" ? undefined : tab,
+            // Carry the sibling pager, or paging stock would rewind the IMEI
+            // register under the reader.
+            ipage: rawIPage,
+            iper: rawIPer,
+          }}
+          noun="items"
         />
       </Card>
 
@@ -362,6 +443,16 @@ export default async function InventoryPage({
                 ),
             },
           ]}
+        />
+        <Pagination
+          slice={imeiSlice}
+          basePath="/inventory"
+          params={{
+            filter: tab === "all" ? undefined : tab,
+            page: rawPage,
+            per: rawPer,
+          }}
+          noun="handsets"
         />
       </Card>
     </div>

@@ -88,6 +88,38 @@ export function Delta({
   );
 }
 
+/**
+ * The stored history a tile can draw, structurally typed.
+ *
+ * Matches `SnapshotTrend` from `packages/core/src/metrics/snapshots.ts` without
+ * importing it, so this presentational layer keeps no dependency on where the
+ * points came from — a live metric's own `series` satisfies it just as well.
+ */
+export interface TileTrend {
+  series: { x: string; y: number }[];
+  changeRatio?: number | null;
+  /** Days the series actually spans, which is rarely the days requested. */
+  spanDays?: number;
+}
+
+/**
+ * Enough history to draw an honest line?
+ *
+ * Mirrors `MIN_TREND_POINTS` and the flat-series refusal in the snapshot
+ * reader, and repeats them here because a tile can also be handed a live
+ * metric's own `series`, which no reader has vetted. Two points render as a
+ * straight diagonal and three identical points as a flat line; both read as
+ * statements about the business — "steady", "climbing" — that the data does
+ * not support. On a table that has one night of history for most keys, that is
+ * the normal case, not an edge case, which is why the check is here and not
+ * left to the caller.
+ */
+function drawable(trend: TileTrend | null | undefined): boolean {
+  if (!trend || trend.series.length < 3) return false;
+  const first = trend.series[0]!.y;
+  return trend.series.some((p) => p.y !== first);
+}
+
 export function KpiTile({
   label,
   result,
@@ -96,6 +128,8 @@ export function KpiTile({
   compareLabel = "vs last month",
   hint,
   accent,
+  trend,
+  trendId,
 }: {
   label: string;
   result: MetricResult | null;
@@ -104,6 +138,24 @@ export function KpiTile({
   compareLabel?: string;
   hint?: string;
   accent?: boolean;
+  /**
+   * Stored history for this metric, from `readSnapshotTrends`.
+   *
+   * Optional and expected to be absent — `kpi_snapshots` was written by the
+   * nightly sweep and read by nothing until FR-V03, so most keys have a single
+   * day on file. A tile with no trend renders exactly as it did before.
+   * Falls back to the metric's own `series` when one is supplied, which is how
+   * `withTrend` merges the two.
+   */
+  trend?: TileTrend | null;
+  /**
+   * Unique per rendered tile, forwarded to `Sparkline`.
+   *
+   * Tiles are rendered in grids of four or more; `Sparkline` derives its SVG
+   * gradient id from this, and two colliding ids make the second gradient win
+   * for both. Defaults to the metric id, which is unique within a dashboard.
+   */
+  trendId?: string;
 }) {
   if (!result) {
     return (
@@ -114,6 +166,26 @@ export function KpiTile({
       </Card>
     );
   }
+
+  const history: TileTrend | null =
+    trend ?? (result.series ? { series: result.series } : null);
+  const showTrend = drawable(history);
+  /** The metric's own comparison wins: it knows which prior period means
+   *  something for it. The window ratio is context, not a replacement. */
+  const ratio = result.changeRatio ?? history?.changeRatio ?? null;
+  const ratioLabel =
+    result.changeRatio !== null && result.changeRatio !== undefined
+      ? compareLabel
+      : history?.spanDays
+        ? `over ${history.spanDays} days`
+        : compareLabel;
+  const sparkColor =
+    polarity === "neutral" || ratio === null
+      ? "var(--accent)"
+      : (polarity === "higher_is_better" ? ratio >= 0 : ratio <= 0)
+        ? "var(--positive)"
+        : "var(--negative)";
+
   const body = (
     <>
       <p className="label">{label}</p>
@@ -121,11 +193,23 @@ export function KpiTile({
         {formatMetricValue(result.value, result.unit, currency)}
       </p>
       <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
-        <Delta ratio={result.changeRatio} polarity={polarity} />
-        {result.changeRatio !== null && result.changeRatio !== undefined && (
-          <span className="text-2xs text-subtle">{compareLabel}</span>
-        )}
+        <Delta ratio={ratio} polarity={polarity} />
+        {ratio !== null && <span className="text-2xs text-subtle">{ratioLabel}</span>}
       </div>
+      {showTrend && (
+        /* Colour is never the only carrier of sign here — the Delta above
+           states the direction with an arrow and a signed percentage, so the
+           line's tint is redundant reinforcement rather than information a
+           colour-blind reader would lose (FR-V02). */
+        <div className="mt-2 -mx-0.5" aria-hidden>
+          <Sparkline
+            points={history!.series}
+            height={26}
+            stroke={sparkColor}
+            id={trendId ?? result.metricId}
+          />
+        </div>
+      )}
       {hint && <p className="text-2xs text-subtle mt-1.5 leading-snug">{hint}</p>}
     </>
   );

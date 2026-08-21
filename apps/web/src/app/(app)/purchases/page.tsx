@@ -1,16 +1,20 @@
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { withTenant } from "@nexus/db";
 import { formatMoney } from "@nexus/core";
 import { requireSession } from "@/lib/session";
 import { loadMetrics, metric, resolveToday } from "@/lib/data";
 import { Card, CardHeader } from "@/components/ui";
 import {
-  BuTag, DataTable, DaysPill, FilterTabs, PageHeader, StatStrip, StatusPill, TableEmpty,
+  BuTag, DataTable, DaysPill, FilterTabs, PageHeader, Pagination, StatStrip, StatusPill,
+  TableEmpty, pageSlice,
 } from "@/components/page";
 import { ActionForm, Disclosure, Field } from "@/components/action-form";
 import { payBillAction, receiveBillAction } from "@/lib/actions";
 
 export const dynamic = "force-dynamic";
+
+const TABS = ["unpaid", "overdue", "po", "all"] as const;
+type Tab = (typeof TABS)[number];
 
 /**
  * Payables and purchasing.
@@ -19,23 +23,69 @@ export const dynamic = "force-dynamic";
  * receivable side is half a ledger — the owner cannot see what they owe, cannot
  * measure creditor days, and cannot track input VAT. The polymorphic documents
  * table means this is the same machinery with `direction = 'out'`.
+ *
+ * THE FILTERS AND THE FIGURES BOTH MOVED INTO SQL. This screen used to fetch
+ * the 80 most recent documents and then filter, count and total that array in
+ * JavaScript. Every number on it was therefore a number about the last 80 rows
+ * wearing the label of a number about the ledger: "Overdue" summed only the
+ * overdue bills that happened to be recent enough to survive the LIMIT, and the
+ * "All" tab badge read 80 no matter how many documents existed. Aggregates and
+ * filters belong on the same side of the wire as the rows they describe.
  */
 export default async function PurchasesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ filter?: string }>;
+  searchParams: Promise<{ filter?: string; page?: string; per?: string }>;
 }) {
   const session = await requireSession();
-  const { filter = "unpaid" } = await searchParams;
+  const { filter, page: rawPage, per: rawPer } = await searchParams;
   const today = resolveToday(session.timezone);
   const ccy = session.baseCurrency;
+
+  const tab: Tab = (TABS as readonly string[]).includes(filter ?? "") ? (filter as Tab) : "unpaid";
 
   const m = await loadMetrics(session, [{ metricId: "accounts_payable" }]);
   const ap = metric(m, "accounts_payable");
 
-  const { bills, bySupplier, businessUnits, suppliers, items } = await withTenant(
+  const base = sql`d.direction = 'out' AND d.doc_type IN ('bill','purchase_order')`;
+  const unpaidBill = sql`d.doc_type = 'bill' AND d.amount_due > 0`;
+  // A paid bill is not overdue, however late it was settled. The array filter
+  // this replaces tested only the due date, so settled bills sat in the overdue
+  // tab forever.
+  const overdueBill = sql`${unpaidBill} AND d.due_date < ${today}::date`;
+
+  const tabClause: SQL =
+    tab === "unpaid" ? sql` AND ${unpaidBill}`
+    : tab === "overdue" ? sql` AND ${overdueBill}`
+    : tab === "po" ? sql` AND d.doc_type = 'purchase_order'`
+    : sql``;
+
+  const { bills, facets, supplierCount, bySupplier, businessUnits, suppliers, items, slice } =
+    await withTenant(
     { tenantId: session.tenantId, userId: session.userId },
     async (tx) => {
+      /* One aggregate pass over the whole payables ledger: every tab badge, the
+         stat strip, and the exact total the pager needs. */
+      const [f] = await tx.execute<{
+        every: number; unpaid: number; overdue: number; po: number; open_po: number;
+        active: number; overdue_total: string;
+      }>(sql`
+        SELECT COUNT(*)::int AS every,
+               COUNT(*) FILTER (WHERE ${unpaidBill})::int AS unpaid,
+               COUNT(*) FILTER (WHERE ${overdueBill})::int AS overdue,
+               COUNT(*) FILTER (WHERE d.doc_type = 'purchase_order')::int AS po,
+               COUNT(*) FILTER (WHERE d.doc_type = 'purchase_order' AND d.status = 'draft')::int AS open_po,
+               COUNT(*) FILTER (WHERE TRUE ${tabClause})::int AS active,
+               COALESCE(SUM(d.amount_due) FILTER (WHERE ${overdueBill}), 0)::text AS overdue_total
+          FROM documents d
+         WHERE ${base}
+      `);
+      const facets = f ?? {
+        every: 0, unpaid: 0, overdue: 0, po: 0, open_po: 0, active: 0, overdue_total: "0",
+      };
+
+      const slice = pageSlice({ page: rawPage, per: rawPer }, facets.active);
+
       const bills = await tx.execute<{
         id: string; doc_number: string; doc_type: string; supplier: string; bu: string;
         color: string; issue_date: string; due_date: string | null; total: string;
@@ -50,10 +100,23 @@ export default async function PurchasesPage({
           FROM documents d
           JOIN business_units b ON b.id = d.business_unit_id
           LEFT JOIN parties p ON p.id = d.party_id
-         WHERE d.direction = 'out' AND d.doc_type IN ('bill','purchase_order')
-         ORDER BY d.issue_date DESC
-         LIMIT 80
+         WHERE ${base} ${tabClause}
+         -- Trailing d.id makes the sort total. Bills are issued in batches and
+         -- tie on issue_date constantly; without it an OFFSET page boundary can
+         -- repeat a bill or skip one.
+         ORDER BY d.issue_date DESC, d.id
+         LIMIT ${slice.perPage} OFFSET ${slice.offset}
       `);
+
+      /* The panel below shows the top ten, which is the point of it — but the
+         stat strip needs how many suppliers carry a balance, not how many of
+         them fit in the panel. */
+      const [sc] = await tx.execute<{ n: number }>(sql`
+        SELECT COUNT(DISTINCT d.party_id)::int AS n FROM documents d
+         WHERE d.direction = 'out' AND d.doc_type = 'bill' AND d.amount_due > 0
+           AND d.party_id IS NOT NULL
+      `);
+      const supplierCount = sc?.n ?? 0;
 
       const bySupplier = await tx.execute<{
         id: string; name: string; owed: string; n: string;
@@ -75,19 +138,11 @@ export default async function PurchasesPage({
          WHERE is_purchasable = true AND is_active = true ORDER BY name LIMIT 100
       `);
 
-      return { bills, bySupplier, businessUnits, suppliers, items };
+      return { bills, facets, supplierCount, bySupplier, businessUnits, suppliers, items, slice };
     },
   );
 
-  const filtered =
-    filter === "unpaid" ? bills.filter((b) => b.doc_type === "bill" && Number(b.amount_due) > 0)
-    : filter === "overdue" ? bills.filter((b) => b.doc_type === "bill" && Number(b.days_late) > 0)
-    : filter === "po" ? bills.filter((b) => b.doc_type === "purchase_order")
-    : bills;
-
-  const overdueTotal = bills
-    .filter((b) => b.doc_type === "bill" && Number(b.days_late) > 0)
-    .reduce((t, b) => t + Number(b.amount_due), 0);
+  const overdueTotal = Number(facets.overdue_total);
 
   return (
     <div className="px-4 lg:px-6 py-4 lg:py-6 max-w-[1400px] mx-auto space-y-5">
@@ -97,9 +152,9 @@ export default async function PurchasesPage({
         stats={[
           { label: "Owed to suppliers", value: formatMoney(ap?.value ?? 0, ccy, 0), tone: "caution" },
           { label: "Overdue", value: formatMoney(overdueTotal, ccy, 0), tone: overdueTotal > 0 ? "negative" : "positive" },
-          { label: "Open bills", value: String(bills.filter((b) => b.doc_type === "bill" && Number(b.amount_due) > 0).length) },
-          { label: "Open POs", value: String(bills.filter((b) => b.doc_type === "purchase_order" && b.status === "draft").length) },
-          { label: "Suppliers with a balance", value: String(bySupplier.length) },
+          { label: "Open bills", value: String(facets.unpaid) },
+          { label: "Open POs", value: String(facets.open_po) },
+          { label: "Suppliers with a balance", value: String(supplierCount) },
         ]}
       />
 
@@ -141,18 +196,19 @@ export default async function PurchasesPage({
           action={
             <FilterTabs
               basePath="/purchases"
-              active={filter}
+              active={tab}
+              defaultKey="unpaid"
               options={[
-                { key: "unpaid", label: "Unpaid" },
-                { key: "overdue", label: "Overdue" },
-                { key: "po", label: "POs" },
-                { key: "all", label: "All", count: bills.length },
+                { key: "unpaid", label: "Unpaid", count: facets.unpaid },
+                { key: "overdue", label: "Overdue", count: facets.overdue },
+                { key: "po", label: "POs", count: facets.po },
+                { key: "all", label: "All", count: facets.every },
               ]}
             />
           }
         />
         <DataTable
-          rows={filtered}
+          rows={bills}
           rowKey={(b) => b.id}
           empty={<TableEmpty title="Nothing here" detail="No bills or purchase orders match." />}
           columns={[
@@ -211,6 +267,12 @@ export default async function PurchasesPage({
                 ) : null,
             },
           ]}
+        />
+        <Pagination
+          slice={slice}
+          basePath="/purchases"
+          params={{ filter: tab === "unpaid" ? undefined : tab }}
+          noun="documents"
         />
       </Card>
 

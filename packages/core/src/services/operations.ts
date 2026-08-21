@@ -9,6 +9,7 @@ import {
   writeAudit,
   type ServiceContext,
 } from "./context.ts";
+import { chargeInternalJob } from "./interco.ts";
 
 /**
  * Operational writes: bookings and jobs.
@@ -279,9 +280,46 @@ export const completeJobInput = z.object({
   jobId: z.uuid(),
   /** Raise the invoice at the same time — the normal case on completion. */
   invoice: z.boolean().default(false),
+  /**
+   * How the internal charge is priced when the job turns out to be on another
+   * business's property. Q-12 is open; `at_cost` is the default and the reasons
+   * are in `interco.ts`. Ignored entirely for external jobs.
+   */
+  interCompanyPricingBasis: z.enum(["at_cost", "arms_length"]).default("at_cost"),
+  interCompanyPricingBasisNote: z.string().max(500).optional(),
   idempotencyKey: z.string().min(8).max(120).optional(),
 });
 
+/**
+ * Close a job out.
+ *
+ * THE INTER-BUSINESS TRIGGER (WF-05 §16.1, PRD-02 story D7, FR-M06).
+ *
+ * This function used to compute `internal: Boolean(job.unit_id)`, return it, and
+ * do nothing else with it — and `completeJobAction` then threw the flag away.
+ * The product's stated wedge, "your AC company services your own flat and both
+ * sides are recorded", had a `Boolean()` and no posting behind it.
+ *
+ * It now fires the charge. Two details are worth stating because both were
+ * wrong in the old flag:
+ *
+ *  1. `unit_id IS NOT NULL` IS NOT THE TEST. A job on a unit owned by the SAME
+ *     business that did the work is not inter-business at all — there is no
+ *     counterparty and nothing to transfer. `chargeInternalJob` compares the
+ *     unit's owner to the job's business and returns null when they match, so
+ *     `internal` below now means "actually charged to another business" rather
+ *     than "happens to reference a unit".
+ *
+ *  2. IT IS PART OF THE SAME TRANSACTION. The completion and the charge land
+ *     together or not at all. A completed job with no charge is the exact state
+ *     the audit found in production data — the transfer that "nobody invoices
+ *     anybody" for — and making it unreachable is the point of the feature.
+ *
+ * The double-charge guard is the `FOR UPDATE` + status check below: a second
+ * completion is refused before it can reach the charge. `chargeInternalJob`
+ * additionally refuses a job that already has an inter-business document, so
+ * the property survives a backfill script that does not go through here.
+ */
 export async function completeJob(ctx: ServiceContext, raw: unknown) {
   const input = completeJobInput.parse(raw);
   requirePermission(ctx, "job:complete");
@@ -308,13 +346,44 @@ export async function completeJob(ctx: ServiceContext, raw: unknown) {
      WHERE job_id = ${input.jobId}::uuid AND status NOT IN ('done','cancelled')
   `);
 
+  // Ordered AFTER the status update so the charge sees a completed job, and
+  // before the audit record so the audit reflects what actually happened.
+  const interCompany = job.unit_id
+    ? await chargeInternalJob(ctx, {
+        jobId: input.jobId,
+        chargedOn: ctx.today,
+        pricingBasis: input.interCompanyPricingBasis,
+        pricingBasisNote: input.interCompanyPricingBasisNote,
+        idempotencyKey: input.idempotencyKey,
+      })
+    : null;
+
   await writeAudit(ctx, {
     action: "job.complete",
     entityTable: "jobs",
     entityId: input.jobId,
     businessUnitId: job.business_unit_id,
-    diff: { jobNumber: job.job_number, from: job.status },
+    diff: {
+      jobNumber: job.job_number,
+      from: job.status,
+      ...(interCompany
+        ? {
+            interCompanyDocument: interCompany.docNumber,
+            chargedTo: interCompany.benefitingBusinessName,
+            chargedAmount: interCompany.gross,
+            pricingBasis: interCompany.pricingBasis,
+          }
+        : {}),
+    },
   });
 
-  return { jobId: input.jobId, jobNumber: job.job_number, internal: Boolean(job.unit_id) };
+  return {
+    jobId: input.jobId,
+    jobNumber: job.job_number,
+    /** True only when the work was actually charged to another business. */
+    internal: interCompany !== null,
+    /** Everything the confirmation screen in WF-05 §16.1 needs to name the
+     *  counterparty and the amount. Null for ordinary customer jobs. */
+    interCompany,
+  };
 }

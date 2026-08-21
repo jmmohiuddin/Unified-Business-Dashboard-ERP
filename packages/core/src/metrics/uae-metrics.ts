@@ -1,6 +1,11 @@
 import { sql } from "drizzle-orm";
 import { changeRatio, defineMetric, num, type MetricDefinition } from "./types.ts";
-import { calculateCorporateTax, calculateVatReturn } from "../uae/tax.ts";
+import {
+  APPORTIONMENT_BASIS_IN_USE,
+  calculateCorporateTax,
+  calculateVatReturn,
+  resolveApportionmentMethod,
+} from "../uae/tax.ts";
 
 /**
  * UAE compliance metrics.
@@ -27,6 +32,23 @@ function quarterStart(iso: string): string {
   return `${y}-${String(qm).padStart(2, "0")}-01`;
 }
 
+/**
+ * Last day of the VAT quarter containing `iso`.
+ *
+ * The return used to run from the quarter start to *today* unconditionally,
+ * which meant a filed quarter could never be re-opened: asking for Q1 in
+ * August returned Q1-start-to-August, a window that is not any tax period at
+ * all. A period selector needs both ends, so both ends exist.
+ */
+function quarterEnd(iso: string): string {
+  const y = Number(iso.slice(0, 4));
+  const m = Number(iso.slice(5, 7));
+  const endMonth = Math.floor((m - 1) / 3) * 3 + 3;
+  const d = new Date(Date.UTC(y, endMonth, 1)); // first of the NEXT month
+  d.setUTCDate(0); // …rolled back to the last day of `endMonth`
+  return d.toISOString().slice(0, 10);
+}
+
 function yearStart(iso: string): string {
   return `${iso.slice(0, 4)}-01-01`;
 }
@@ -37,18 +59,39 @@ const vatReturnPosition = defineMetric({
   id: "vat_return_position",
   title: "VAT Position This Quarter",
   description:
-    "Net VAT payable to (or refundable from) the FTA for the current quarter, built the way the " +
+    "Net VAT payable to (or refundable from) the FTA for a VAT quarter, built the way the " +
     "VAT201 return is: standard-rated supplies and output VAT, zero-rated supplies, exempt " +
-    "supplies, and recoverable input VAT AFTER apportionment. Because residential rent is exempt, " +
-    "only the taxable share of overhead input VAT can be reclaimed — over-claiming it is one of " +
-    "the most common assessment findings for UAE property owners. A positive value is owed to the " +
-    "FTA; a negative value is a refund.",
+    "supplies, imported services under the reverse charge, and recoverable input VAT AFTER " +
+    "apportionment. Because residential rent is exempt, only the taxable share of overhead input " +
+    "VAT can be reclaimed — over-claiming it is one of the most common assessment findings for " +
+    "UAE property owners. Defaults to the quarter containing today, capped at today; pass from/to " +
+    "to report a closed quarter in full. The recovery ratio is computed on the " +
+    `${APPORTIONMENT_BASIS_IN_USE.replace("_", " ")} basis, which is NOT confirmed against the ` +
+    "Executive Regulation and is an open question for the tax adviser. A positive value is owed " +
+    "to the FTA; a negative value is a refund. This is a management position, not a filing.",
   unit: "currency",
   polarity: "neutral",
   permission: "report:read",
   aiExposed: true,
-  async run(ctx) {
-    const from = quarterStart(ctx.today);
+  async run(ctx, params) {
+    // The window defaults to the quarter containing `today`, capped at today so
+    // an in-flight quarter reports what has actually happened. `from`/`to` are
+    // honoured so the VAT screen's period selector can open a CLOSED quarter,
+    // which reports the whole of it — the previous behaviour ran every period
+    // to `today` and could therefore never reproduce a filed return.
+    const from = params.from ?? quarterStart(ctx.today);
+    const periodEnd = params.to ?? quarterEnd(from);
+    const to = periodEnd < ctx.today ? periodEnd : ctx.today;
+
+    // Tenant-level VAT configuration: the apportionment method (FR-C02) and the
+    // emirate box 1 is reported under. Read here rather than passed in because
+    // a metric must produce the same number for the AI, the dashboard and the
+    // screen, and a caller-supplied method would let those three disagree.
+    const [tenantCfg] = await ctx.tx.execute<{ emirate: string; vat: unknown }>(sql`
+      SELECT emirate, settings -> 'vat' AS vat FROM tenants WHERE id = ${ctx.tenantId}::uuid
+    `);
+    const { method, notes: methodNotes } = resolveApportionmentMethod(tenantCfg?.vat);
+
     // Credit notes belong in the return, signed negative.
     //
     // `createCreditNote` stores its lines with POSITIVE quantities and totals
@@ -80,22 +123,64 @@ const vatReturnPosition = defineMetric({
         LEFT JOIN tax_codes tc ON tc.id = dl.tax_code_id
        WHERE d.doc_type IN ('invoice','credit_note') AND d.direction = 'in'
          AND d.status NOT IN ('cancelled','void','draft')
-         AND d.issue_date BETWEEN ${from}::date AND ${ctx.today}::date
+         AND d.issue_date BETWEEN ${from}::date AND ${to}::date
        GROUP BY 1
     `);
 
-    // Input VAT actually incurred, split by whether it is directly attributable.
-    const inputs = await ctx.tx.execute<{ recoverable: string; irrecoverable: string }>(sql`
+    // Input VAT actually incurred, split three ways by what each cost SERVES.
+    //
+    // The ledger is the carrier of that split, not an inference made here:
+    // `receiveBill` debits 1600 / 1610 / 5720 per line according to the supply
+    // the line serves, so summing the three system accounts for the period
+    // reproduces exactly the attribution the bill was posted under. 1610
+    // (VAT_INPUT_RESIDUAL) is the shared-overhead pool that wave 1 created and
+    // did not wire; it is the number the apportionment engine below multiplies
+    // by the recovery ratio, and it used to be hard-coded to zero — which meant
+    // 100% of every non-rental business unit's input VAT was reclaimed and the
+    // "recovery ratio" shown to the accountant multiplied nothing.
+    const inputs = await ctx.tx.execute<{
+      recoverable: string; residual: string; irrecoverable: string;
+    }>(sql`
       SELECT
         COALESCE(SUM(jl.base_debit - jl.base_credit)
           FILTER (WHERE a.system_key = 'VAT_INPUT'), 0) AS recoverable,
+        COALESCE(SUM(jl.base_debit - jl.base_credit)
+          FILTER (WHERE a.system_key = 'VAT_INPUT_RESIDUAL'), 0) AS residual,
         COALESCE(SUM(jl.base_debit - jl.base_credit)
           FILTER (WHERE a.system_key = 'VAT_IRRECOVERABLE'), 0) AS irrecoverable
       FROM journal_lines jl
       JOIN journals j ON j.id = jl.journal_id
       JOIN accounts a ON a.id = jl.account_id
-      WHERE a.system_key IN ('VAT_INPUT','VAT_IRRECOVERABLE')
-        AND j.posting_date BETWEEN ${from}::date AND ${ctx.today}::date
+      WHERE a.system_key IN ('VAT_INPUT','VAT_INPUT_RESIDUAL','VAT_IRRECOVERABLE')
+        AND j.posting_date BETWEEN ${from}::date AND ${to}::date
+    `);
+
+    // Reverse charge on imported services (FR-C03), box 3.
+    //
+    // Sourced from BILLS, not from sales. Box 3 on the VAT201 is the recipient's
+    // own imports — the supply on which the buyer self-accounts — so a sales
+    // document tagged `reverse_charge` does not belong in it, and the previous
+    // implementation's habit of adding sales-side RCM tax to output VAT was
+    // adding a number that is nil by construction (a supplier under RCM charges
+    // no VAT).
+    //
+    // KNOWN GAP, and the reason this returns 0 against today's data:
+    // `receiveBill` does not write `tax_code_id` onto bill lines at all, so no
+    // bill in the database can be identified as an imported service. The query
+    // is the correct one and starts producing figures the moment purchasing
+    // stores the tax code; until then FR-C03 is implemented and tested in
+    // `calculateVatReturn` but unreachable from production data, and the box
+    // will honestly read nil rather than looking complete.
+    const [rcRow] = await ctx.tx.execute<{ net: string }>(sql`
+      SELECT COALESCE(SUM((dl.line_total - dl.tax_amount)
+               * CASE WHEN d.doc_type = 'debit_note' THEN -1 ELSE 1 END), 0) AS net
+        FROM document_lines dl
+        JOIN documents d ON d.id = dl.document_id
+        JOIN tax_codes tc ON tc.id = dl.tax_code_id
+       WHERE d.doc_type IN ('bill','debit_note') AND d.direction = 'out'
+         AND d.status NOT IN ('cancelled','void','draft')
+         AND tc.treatment = 'reverse_charge'
+         AND d.issue_date BETWEEN ${from}::date AND ${to}::date
     `);
 
     const byTreatment = (t: string) => {
@@ -105,27 +190,24 @@ const vatReturnPosition = defineMetric({
     const standard = byTreatment("standard");
     const zero = byTreatment("zero_rated");
     const exempt = byTreatment("exempt");
-    const rc = byTreatment("reverse_charge");
 
     const result = calculateVatReturn({
       standardRatedSupplies: standard.net,
-      outputVat: standard.vat + rc.vat,
+      outputVat: standard.vat,
       zeroRatedSupplies: zero.net,
       exemptSupplies: exempt.net,
-      reverseChargeSupplies: rc.net,
+      reverseChargeSupplies: num(rcRow?.net),
+      // No attribution split is passed, so the whole of box 3 is treated as a
+      // shared overhead and recovered at the period's ratio. That is the
+      // conservative reading for a partly exempt group, and it is the only one
+      // available: a bill line records no attribution today. A line that serves
+      // only the exempt flats therefore over-recovers here by the ratio; the
+      // fix belongs in `receiveBill`, which is where the attribution is known.
       directlyAttributableInput: num(inputs[0]?.recoverable),
-      // PENDING, not intent. `receiveBill` currently classifies every input VAT
-      // line as wholly recoverable or wholly irrecoverable from the business
-      // unit's kind, so nothing in the database is a residual and there is
-      // nothing to read here yet. Until the residual bucket lands upstream this
-      // zero means "no residual pool exists", not "the residual is nil" — with
-      // the consequence that the apportionment engine below never restricts
-      // anything and the "Input recovery ratio %" in the breakdown is derived
-      // from a zero. Wire this to the residual account once the purchasing side
-      // publishes its read contract; do not remove the zero before then, because
-      // a wrong residual is worse than a visible gap.
-      residualInput: 0,
+      residualInput: num(inputs[0]?.residual),
       exemptAttributableInput: num(inputs[0]?.irrecoverable),
+      method,
+      emirate: tenantCfg?.emirate ?? undefined,
     });
 
     return {
@@ -133,14 +215,46 @@ const vatReturnPosition = defineMetric({
       unit: "currency" as const,
       breakdown: [
         { key: "box1", label: "Standard-rated supplies", value: standard.net,
-          meta: { outputVat: standard.vat } },
+          meta: { outputVat: standard.vat, emirate: tenantCfg?.emirate ?? null } },
+        { key: "box3", label: "Reverse-charge imported services", value: num(rcRow?.net),
+          meta: { outputVat: result.reverseChargeOutputVat,
+                  recovered: result.reverseChargeRecoverableInput } },
         { key: "box4", label: "Zero-rated supplies", value: zero.net },
         { key: "box5", label: "Exempt supplies (residential rent)", value: exempt.net },
-        { key: "output", label: "Output VAT collected", value: standard.vat + rc.vat },
+        { key: "output", label: "Output VAT collected", value: result.totalOutputVat },
         { key: "input", label: "Recoverable input VAT", value: -result.totalRecoverableInput },
         { key: "irrecoverable", label: "Irrecoverable input VAT (a cost)", value: result.irrecoverableInput },
         { key: "ratio", label: "Input recovery ratio %",
           value: Math.round(result.recoveryRatio * 1000) / 10 },
+        // The three parts of the reclaim, so the screen and the AI can both
+        // explain WHY the reclaim is what it is rather than only stating it.
+        { key: "direct_input", label: "Input VAT directly attributable to taxable supplies",
+          value: num(inputs[0]?.recoverable) },
+        { key: "residual_input", label: "Shared-overhead input VAT awaiting apportionment",
+          value: num(inputs[0]?.residual) },
+        { key: "residual_recovered", label: "Of that, recoverable at this quarter's ratio",
+          value: result.recoverableResidual },
+        {
+          key: "method",
+          label: result.apportionment.method === "floorspace"
+            ? "Apportionment: floorspace (FTA-approved special method)"
+            : "Apportionment: standard, output-based",
+          // A ratio, not an amount — carried as a value so the AI can quote it.
+          value: Math.round(result.recoveryRatio * 1000) / 10,
+          meta: {
+            method: result.apportionment.method,
+            // The exact ratio, unrounded. `value` above is the display
+            // percentage; anything that multiplies money or gets exported must
+            // use this one, or a 81.6929% recovery is filed as 81.7%.
+            recoveryRatio: result.recoveryRatio,
+            basis: result.apportionment.basis,
+            basisConfirmed: false,
+            ftaApprovalReference: result.apportionment.ftaApprovalReference,
+            periodStart: from,
+            periodEnd: to,
+            notes: [...methodNotes, ...result.notes],
+          },
+        },
       ],
       drilldownHref: "/accounting/vat",
     };

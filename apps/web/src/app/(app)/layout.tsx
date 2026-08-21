@@ -47,6 +47,11 @@ const NAV: NavGroup[] = [
       { href: "/receivables", label: "Money owed", icon: "◳", permission: "document:read" },
       { href: "/purchases", label: "Bills & POs", icon: "▤", permission: "document:read" },
       { href: "/rentals/cheques", label: "Cheques", icon: "▭", permission: "lease:read" },
+      // The adoption gate: if cash cannot be recorded in three taps, it gets
+      // recorded on paper instead and the ledger is fiction. It belongs beside
+      // the money screens, not buried in settings.
+      { href: "/cash", label: "Cash entry", icon: "⊕", permission: "payment:create" },
+      { href: "/finance/cash", label: "Cash register", icon: "▣", permission: "settings:update" },
     ],
   },
   {
@@ -58,6 +63,7 @@ const NAV: NavGroup[] = [
       { href: "/salon", label: "Salon", icon: "◶", permission: "appointment:read" },
       { href: "/inventory", label: "Inventory", icon: "◷", permission: "stock:read" },
       { href: "/crm", label: "Customers", icon: "◰", permission: "party:read" },
+      { href: "/businesses/interco", label: "Between businesses", icon: "⇄", permission: "report:read" },
     ],
   },
   {
@@ -66,6 +72,8 @@ const NAV: NavGroup[] = [
       { href: "/compliance", label: "Watchlist", icon: "⬡", permission: "settings:read" },
       { href: "/accounting/vat", label: "VAT", icon: "▧", permission: "report:read" },
       { href: "/hr/gratuity", label: "Gratuity", icon: "▨", permission: "payroll:read" },
+      { href: "/accounting/close", label: "Period close", icon: "▦", permission: "period:read" },
+      { href: "/compliance/e-invoicing", label: "E-invoicing", icon: "◈", permission: "settings:read" },
     ],
   },
   {
@@ -77,6 +85,7 @@ const NAV: NavGroup[] = [
         icon: "▩",
         permission: "report:read",
       },
+      { href: "/settings/import", label: "Import data", icon: "▼", permission: "journal:post" },
     ],
   },
   // AI assistant temporarily disabled — no ANTHROPIC_API_KEY provisioned yet.
