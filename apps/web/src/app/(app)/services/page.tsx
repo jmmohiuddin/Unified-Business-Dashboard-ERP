@@ -109,18 +109,29 @@ export default async function ServicesPage({
         status: string; priority: string; party: string | null; site: string | null;
         unit_code: string | null; reported_at: string; complete_by: string | null;
         breached: boolean; quoted: string; labor_cost: string; material_cost: string;
-        technician: string | null; rating: number | null;
+        technician: string | null; rating: number | null; charge_to: string | null;
       }>(sql`
         SELECT j.id, j.job_number, j.service_kind, j.title, j.status::text, j.priority::text,
                p.display_name AS party, st.name AS site, u.code AS unit_code,
                j.reported_at::text, j.complete_by::text,
                (j.complete_by < now() AND j.status NOT IN ('completed','invoiced','cancelled')) AS breached,
                j.quoted_value AS quoted, j.labor_cost, j.material_cost,
-               e.full_name AS technician, j.customer_rating AS rating
+               e.full_name AS technician, j.customer_rating AS rating,
+               -- FR-P12. Which OTHER business gets billed when this job is
+               -- completed, or NULL if nobody does. The test is NOT that the
+               -- job has a unit — the property team fixing its own flat has a
+               -- unit and no counterparty — it is that the unit belongs to a
+               -- DIFFERENT business, which is exactly the condition
+               -- chargeInternalJob applies before it posts. Selected here so
+               -- the confirmation can name the business about to be charged
+               -- instead of describing the possibility in the abstract.
+               CASE WHEN ub.id IS NOT NULL AND ub.id <> j.business_unit_id
+                    THEN ub.name END AS charge_to
           FROM jobs j
           LEFT JOIN parties p ON p.id = j.party_id
           LEFT JOIN sites st ON st.id = j.site_id
           LEFT JOIN units u ON u.id = j.unit_id
+          LEFT JOIN business_units ub ON ub.id = u.business_unit_id
           LEFT JOIN LATERAL (
             SELECT employee_id FROM job_visits WHERE job_id = j.id ORDER BY seq LIMIT 1
           ) v ON true
@@ -351,7 +362,8 @@ export default async function ServicesPage({
               render: (j) =>
                 OPEN_STATUSES.includes(j.status) ? (
                   <ActionForm action={completeJobAction} submitLabel="Complete"
-                    pendingLabel="…" variant="ghost" hidden={{ jobId: j.id }} />
+                    pendingLabel="…" variant="ghost" hidden={{ jobId: j.id }}
+                    confirm={completeConfirm(j, ccy)} />
                 ) : null,
             },
           ]}
@@ -364,5 +376,39 @@ export default async function ServicesPage({
         />
       </Card>
     </div>
+  );
+}
+
+/**
+ * What completing this job will actually do — FR-P12.
+ *
+ * Completion was a bare ghost button in a table row, and as of the wave-2
+ * inter-business trigger it is no longer only a status change: a job raised
+ * against another business's unit posts a reciprocal charge on both sets of
+ * books the moment it is closed, with no screen in between and no undo. A
+ * confirmation that said "are you sure?" would be worse than none here,
+ * because the thing the technician needs to know is precisely the thing a
+ * generic prompt omits — that somebody else is about to be billed.
+ *
+ * The amount is quotable because `at_cost` is the default basis (Q-12 is open;
+ * see the `pricingBasis` docblock in `interco.ts`) and cost is labour plus
+ * materials, both of which are already on the row. It is stated as a figure and
+ * hedged only where the code hedges: `chargeInternalJob` returns null rather
+ * than posting a zero transfer, so a job with no recorded cost gets the plain
+ * wording, and VAT rides on top only when the two businesses are separate
+ * taxable persons, which this row cannot know.
+ */
+function completeConfirm(
+  job: { job_number: string; charge_to: string | null; labor_cost: string; material_cost: string },
+  ccy: string,
+): string {
+  const cost = Number(job.labor_cost) + Number(job.material_cost);
+  const plain = `Closes ${job.job_number} and marks every visit on it done. A completed job cannot be reopened from this screen.`;
+  if (!job.charge_to || !(cost > 0)) return plain;
+  return (
+    `Closes ${job.job_number} AND bills ${job.charge_to} ${formatMoney(cost, ccy)} for it — ` +
+    `labour and materials, at cost — because the work was done on their property. ` +
+    `Both sides of that charge post together and neither can be undone from this screen. ` +
+    `VAT is added on top where the two businesses are separate companies.`
   );
 }

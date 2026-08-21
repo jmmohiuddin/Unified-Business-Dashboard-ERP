@@ -258,6 +258,16 @@ export default async function InventoryPage({
             submitLabel="Post count"
             pendingLabel="Posting…"
             className="space-y-3"
+            /* FR-P12, and the most consequential of the four this wave covers:
+               this is the only one that writes straight to profit. The exact
+               variance cannot be named here — it is `counted − on hand` for the
+               CHOSEN warehouse, valued at that warehouse's moving-average cost,
+               and neither figure is known until the user has picked both and
+               typed a number. So the confirmation names the arithmetic and the
+               account instead of a figure it would have to invent. Quoting the
+               amount needs `confirm` to be a function of the submitted form
+               data rather than a string; see the report accompanying this wave. */
+            confirm="Posts the gap between your count and the quantity the system holds for that warehouse, valued at the item's average cost, straight into profit and loss as an expense. A short count reduces the profit you report for this period on the spot. Counts are not deleted — a wrong one is corrected by counting again, and both counts stay in the stock history."
           >
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               {/* Warehouse value carries its business unit as "id::bu" so the

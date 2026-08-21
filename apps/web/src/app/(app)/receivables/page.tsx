@@ -288,6 +288,10 @@ export default async function ReceivablesPage({
             submitLabel="Record payment"
             pendingLabel="Recording…"
             className="space-y-3"
+            /* FR-P12. The amount is typed rather than known at render, so the
+               confirmation names the EFFECT it cannot quote a figure for: which
+               invoices close, and that the ageing report moves as a result. */
+            confirm="Posts the money as received and applies it to this customer's unpaid invoices, oldest first, closing them — the ageing above changes immediately. There is no undo on this screen: a payment recorded in error has to be reversed by the accountant, and both entries stay visible."
           >
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field
@@ -431,6 +435,11 @@ export default async function ReceivablesPage({
                             submitLabel="Settle"
                             pendingLabel="…"
                             variant="ghost"
+                            /* One click here takes money against a named
+                               invoice, so the confirmation can be specific:
+                               who, how much, by what method, and against what.
+                               There is no void on this screen. */
+                            confirm={`Records ${formatMoney(Number(inv.amount_due), ccy)} received from ${inv.party} by bank transfer today and settles ${inv.doc_number} in full. There is no undo on this screen — a payment recorded in error has to be reversed by the accountant.`}
                             hidden={{
                               businessUnitId: inv.business_unit_id,
                               partyId: inv.party_id ?? undefined,

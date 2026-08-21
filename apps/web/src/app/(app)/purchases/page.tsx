@@ -168,6 +168,13 @@ export default async function PurchasesPage({
             submitLabel="Record bill"
             pendingLabel="Recording…"
             className="space-y-3"
+            /* FR-P12. Three irreversible things happen at once here and only
+               one of them is visible on this screen, which is why the
+               confirmation lists them: the debt, the stock, and the VAT. The
+               VAT line is the one that matters most — an input-VAT claim on a
+               bill recorded in error is a wrong figure on a filed return, and
+               the return is not corrected from this page. */
+            confirm="Records a debt to this supplier that stays on the payables list until it is paid, receives the stock and recomputes the item's average cost, and claims the VAT back on the next return. There is no undo on this screen — a bill recorded in error has to be reversed by the accountant, and both entries stay visible."
           >
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Business" name="businessUnitId" required
