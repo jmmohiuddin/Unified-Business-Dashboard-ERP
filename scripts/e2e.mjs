@@ -9,7 +9,7 @@
  * differences between roles, business-unit scoping, and tenant isolation at
  * the database level.
  */
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import postgres from "postgres";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:3100";
@@ -35,6 +35,79 @@ async function actionId() {
   return m[0];
 }
 
+/**
+ * The action id of ONE form on a page that carries several.
+ *
+ * `/login` has a single form, so grabbing the first `$ACTION_ID_` there is
+ * safe. `/settings/security` has five — sign out, sign out everywhere, start
+ * enrolment, confirm enrolment, end other sessions — and taking the first would
+ * silently sign the suite out instead of enrolling it. Identify the form by the
+ * label on its submit button, which is what a human clicking it would use.
+ */
+function actionIdFor(html, buttonLabel) {
+  for (const form of html.matchAll(/<form[\s\S]*?<\/form>/g)) {
+    if (!form[0].includes(buttonLabel)) continue;
+    const id = form[0].match(/\$ACTION_ID_[a-f0-9]+/)?.[0];
+    if (id) return id;
+  }
+  throw new Error(`No form with a "${buttonLabel}" button on that page`);
+}
+
+/**
+ * Fold a response's Set-Cookie headers into a jar, the way a browser would:
+ * a later value for the same name replaces the earlier one rather than being
+ * appended alongside it. Sending two `nexus_auth_level` cookies would let the
+ * server pick either, which is exactly the ambiguity the marker exists to
+ * remove — so the jar has to be keyed by name.
+ */
+function mergeCookies(jar, res) {
+  const byName = new Map(
+    jar.split("; ").filter(Boolean).map((c) => [c.split("=")[0], c]),
+  );
+  for (const line of res.headers.getSetCookie?.() ?? []) {
+    const pair = line.split(";")[0];
+    if (pair) byName.set(pair.split("=")[0], pair);
+  }
+  return [...byName.values()].join("; ");
+}
+
+// ── TOTP ────────────────────────────────────────────────────────────────────
+//
+// RFC 6238, SHA-1, six digits, thirty-second step — the parameters
+// apps/web/src/lib/mfa.ts verifies against. Recomputed here rather than
+// imported: this file is plain ESM run by node, and a check that borrows the
+// implementation it is checking proves considerably less than one that arrives
+// at the same six digits independently.
+
+const BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+function fromBase32(s) {
+  let bits = 0;
+  let value = 0;
+  const out = [];
+  for (const ch of s.toUpperCase().replace(/=+$/, "")) {
+    const idx = BASE32.indexOf(ch);
+    if (idx === -1) continue;
+    value = (value << 5) | idx;
+    bits += 5;
+    if (bits >= 8) {
+      out.push((value >>> (bits - 8)) & 255);
+      bits -= 8;
+    }
+  }
+  return Buffer.from(out);
+}
+
+function totp(secretBase32, at = Date.now()) {
+  const counter = Math.floor(at / 30_000);
+  const buf = Buffer.alloc(8);
+  buf.writeUInt32BE(Math.floor(counter / 2 ** 32), 0);
+  buf.writeUInt32BE(counter >>> 0, 4);
+  const mac = createHmac("sha1", fromBase32(secretBase32)).update(buf).digest();
+  const offset = mac[mac.length - 1] & 0x0f;
+  return String((mac.readUInt32BE(offset) & 0x7fff_ffff) % 1_000_000).padStart(6, "0");
+}
+
 /** Sign in exactly the way a browser with JavaScript disabled would. */
 async function signIn(email, password, aid) {
   const body = new FormData();
@@ -42,14 +115,115 @@ async function signIn(email, password, aid) {
   body.set("email", email);
   body.set("password", password);
   const res = await fetch(`${BASE}/login`, { method: "POST", body, redirect: "manual" });
-  const cookie = res.headers.get("set-cookie") ?? "";
-  const token = cookie.match(/nexus_session=([^;]+)/)?.[1] ?? null;
-  return { status: res.status, location: res.headers.get("location"), token };
+  // A browser returns EVERY cookie the sign-in set, not just the session one.
+  // Since the MFA enrolment gate landed, that includes the `nexus_auth_level`
+  // assurance marker, and proxy.ts bounces any request that carries a session
+  // without it. Reading only `nexus_session` here made the whole suite look
+  // like a mass authentication failure when the product was working correctly.
+  const setCookies = res.headers.getSetCookie?.() ?? [];
+  const jar = setCookies.map((c) => c.split(";")[0]).filter(Boolean).join("; ");
+  const token =
+    setCookies.join("; ").match(/nexus_session=([^;]+)/)?.[1] ??
+    (res.headers.get("set-cookie") ?? "").match(/nexus_session=([^;]+)/)?.[1] ??
+    null;
+  return {
+    status: res.status,
+    location: res.headers.get("location"),
+    token,
+    jar,
+    // The whole Set-Cookie lines, attributes included, for the checks that are
+    // about HttpOnly and SameSite rather than about the value.
+    setCookies,
+    // Present instead of a session when the account is enrolled: the password
+    // has been accepted but nothing has been issued yet.
+    pending: setCookies.join("; ").match(/nexus_mfa_pending=([^;]+)/)?.[1] ?? null,
+  };
 }
 
-async function get(path, token) {
+/**
+ * Enrol a TOTP authenticator by driving the real enrolment screens.
+ *
+ * Seeding `users.mfa_secret_enc` straight into Postgres would be shorter, but it
+ * would also mean the suite never once exercises the two-step enrolment that
+ * every owner, accountant and general manager now has to complete — and a
+ * secret written by the test in a format the app cannot decrypt would look
+ * identical to a working one until a code was actually verified. So this posts
+ * the same two forms a browser would, reads the base32 key off the page exactly
+ * where the "enter the key manually" fallback puts it, and lets the server be
+ * the one that decides the code was right.
+ *
+ * Takes the restricted jar the login gate issued and returns the secret plus a
+ * jar upgraded to `full` — completeEnrolment() re-stamps the assurance marker on
+ * the same session rather than making the user sign in again.
+ */
+async function enrolTotp(restrictedJar) {
+  let jar = restrictedJar;
+
+  const start = await get("/settings/security", jar);
+  const startRes = await fetch(`${BASE}/settings/security`, {
+    method: "POST",
+    body: (() => {
+      const b = new FormData();
+      b.set(actionIdFor(start.html, "Set up authenticator"), "");
+      return b;
+    })(),
+    headers: { cookie: jar },
+    redirect: "manual",
+  });
+  jar = mergeCookies(jar, startRes);
+
+  const verify = await get("/settings/security?step=verify", jar);
+  // A 160-bit secret is 32 base32 characters, rendered in the <code> block the
+  // page offers for authenticators that cannot scan a QR.
+  const secret = verify.html.match(/<code[^>]*>([A-Z2-7]{32})<\/code>/)?.[1];
+  if (!secret) throw new Error("Enrolment page did not render a base32 secret");
+
+  const confirmRes = await fetch(`${BASE}/settings/security`, {
+    method: "POST",
+    body: (() => {
+      const b = new FormData();
+      b.set(actionIdFor(verify.html, "Confirm and enable"), "");
+      // Computed at submission time, not before the two page loads above: the
+      // app accepts one adjacent step (±30s), so a code minted a few hundred
+      // milliseconds ago is comfortably inside the window.
+      b.set("code", totp(secret));
+      return b;
+    })(),
+    headers: { cookie: jar },
+    redirect: "manual",
+  });
+  if (confirmRes.headers.get("location") !== "/settings/security?enabled=1") {
+    throw new Error(`Enrolment was refused: ${confirmRes.headers.get("location")}`);
+  }
+  return { secret, jar: mergeCookies(jar, confirmRes) };
+}
+
+/** Answer the login challenge an enrolled account receives, ending in a session. */
+async function completeChallenge(challenge, secret) {
+  const cookie = `nexus_mfa_pending=${challenge.pending}`;
+  const html = await (await fetch(`${BASE}/login/verify`, { headers: { cookie } })).text();
+  const body = new FormData();
+  body.set(actionIdFor(html, "Verify"), "");
+  body.set("code", totp(secret));
+  const res = await fetch(`${BASE}/login/verify`, {
+    method: "POST",
+    body,
+    headers: { cookie },
+    redirect: "manual",
+  });
+  const setCookies = res.headers.getSetCookie?.() ?? [];
+  return {
+    status: res.status,
+    location: res.headers.get("location"),
+    token: setCookies.join("; ").match(/nexus_session=([^;]+)/)?.[1] ?? null,
+    jar: setCookies.map((c) => c.split(";")[0]).filter(Boolean).join("; "),
+    setCookies,
+  };
+}
+
+async function get(path, jar) {
   const res = await fetch(`${BASE}${path}`, {
-    headers: token ? { cookie: `nexus_session=${token}` } : {},
+    headers: jar ? { cookie: jar } : {},
     redirect: "manual",
   });
   return { status: res.status, location: res.headers.get("location"), html: await res.text() };
@@ -74,6 +248,14 @@ async function main() {
     const reset = postgres(DB, { max: 1, onnotice: () => {} });
     await reset`TRUNCATE rate_limit_hits`;
     await reset`UPDATE users SET failed_login_count = '0'::jsonb, locked_until = NULL`;
+    // Same reasoning for the second factor: this run enrols the owner for real,
+    // so a run that crashed halfway would leave an enrolment behind and the
+    // "no second factor yet" assertion below would be asserting nothing. Start
+    // from the state the seed produces, whatever the last run did.
+    await reset`
+      UPDATE users
+         SET mfa_secret_enc = NULL, recovery_codes_enc = NULL, mfa_enabled_at = NULL
+       WHERE email = 'owner@sumon.test'`;
     await reset.end();
   }
 
@@ -92,20 +274,72 @@ async function main() {
     `both → ${bad.location}`,
   );
 
-  const owner = await signIn("owner@sumon.test", "demo1234", aid);
-  check("valid credentials issue a session", owner.location === "/" && Boolean(owner.token));
+  /**
+   * The owner's role is in MFA_REQUIRED_ROLES, so a correct password on its own
+   * no longer opens the dashboard — it opens the one page where the missing
+   * second factor can be added. Everything below this point needs a full
+   * session, so the suite has to earn one the way a real owner does: get the
+   * restricted session, enrol an authenticator, then sign in again and clear
+   * the challenge. The old single assertion here ("valid credentials issue a
+   * session") is now three, one per step, because each step is separately
+   * capable of regressing.
+   */
+  const ownerFirst = await signIn("owner@sumon.test", "demo1234", aid);
+  check(
+    "an owner with no second factor is sent to enrolment on a restricted session",
+    ownerFirst.location === "/settings/security?mfa=required" &&
+      /nexus_auth_level=mfa_setup\./.test(ownerFirst.jar),
+    ownerFirst.location ?? "(no redirect)",
+  );
 
-  const cookieHeader = (await fetch(`${BASE}/login`, {
-    method: "POST",
-    body: (() => {
-      const b = new FormData();
-      b.set(aid, "");
-      b.set("email", "owner@sumon.test");
-      b.set("password", "demo1234");
-      return b;
-    })(),
-    redirect: "manual",
-  })).headers.get("set-cookie") ?? "";
+  /**
+   * Wrapped, because the three steps below are the only ones in this file that
+   * can abort the process rather than fail a check.
+   *
+   * Enrolment reads an action id and a base32 seed out of rendered HTML; if a
+   * button label changes, `actionIdFor` throws, and an uncaught throw here takes
+   * the ~90 checks after this point with it. A suite that dies on check 7 of 100
+   * reports nothing about checks 8 to 100 — which is strictly less information
+   * than a suite that says "authentication broke, and here is everything that
+   * broke as a result". So a failure is recorded and the run continues on the
+   * restricted session, where every downstream page check fails visibly with a
+   * redirect instead of silently not existing.
+   */
+  let ownerSecret = null;
+  let challenge = null;
+  let owner = ownerFirst;
+  let mfaError = null;
+  try {
+    ({ secret: ownerSecret } = await enrolTotp(ownerFirst.jar));
+    challenge = await signIn("owner@sumon.test", "demo1234", aid);
+    owner = await completeChallenge(challenge, ownerSecret);
+  } catch (err) {
+    mfaError = err.message ?? String(err);
+  }
+  check(
+    "the owner can enrol an authenticator through /settings/security",
+    mfaError === null,
+    mfaError ?? "",
+  );
+  check(
+    "an enrolled account is challenged before any session is issued",
+    challenge?.location === "/login/verify" && !challenge.token && Boolean(challenge.pending),
+    challenge?.location ?? "(no challenge issued)",
+  );
+  check(
+    "a cleared second factor issues a full, unrestricted session",
+    owner !== ownerFirst &&
+      owner.location === "/" &&
+      Boolean(owner.token) &&
+      /nexus_auth_level=full\./.test(owner.jar),
+    owner === ownerFirst ? "(never got past the enrolment gate)" : owner.location ?? "(no redirect)",
+  );
+
+  // Read the flags off the session cookie the sign-in above actually set,
+  // rather than burning another login for them. `headers.get("set-cookie")`
+  // folds every cookie into one string, so on a response that sets three of
+  // them a match for HttpOnly could come from any of the three.
+  const cookieHeader = owner.setCookies.find((c) => c.startsWith("nexus_session=")) ?? "";
   check("session cookie is HttpOnly and SameSite=Lax", /HttpOnly/i.test(cookieHeader) && /SameSite=lax/i.test(cookieHeader));
 
   // ── Security headers ──────────────────────────────────────────────────────
@@ -130,10 +364,32 @@ async function main() {
   check("passwords are argon2id, not a placeholder",
     /^\$argon2id\$v=19\$m=65536,t=3,p=4\$/.test(pwHash?.password_hash ?? ""),
     (pwHash?.password_hash ?? "").slice(0, 32));
-  const [stored] = await sql`
-    SELECT token_hash FROM sessions WHERE token_hash = ${createHash("sha256").update(owner.token).digest("hex")}
-  `;
-  check("session token is stored hashed, never in plaintext", Boolean(stored));
+  /**
+   * The token the server issued must appear in `sessions` only as its SHA-256
+   * digest — so the row is looked up BY that digest, and a hit proves both that
+   * the session exists and that what is stored is the hash rather than the
+   * token. That is the assertion; the guard below is about not losing it.
+   *
+   * `owner.token` is now the post-verify token, which does not exist until the
+   * second factor is cleared. Feeding a null straight into `createHash().update()`
+   * throws ERR_INVALID_ARG_TYPE, and an uncaught throw here takes the ~90 checks
+   * after this line with it — the suite reports nothing at all about the thing it
+   * was actually run to measure. So an absent token is reported as this check
+   * failing, which is exactly what it means, rather than as a stack trace.
+   * Note what is NOT done: `owner.token ?? ""` would hash the empty string, find
+   * no row, and fail — but it would fail for an unrelated reason and read as if
+   * the storage format were wrong. Say which of the two things broke.
+   */
+  const [stored] = owner.token
+    ? await sql`
+        SELECT token_hash FROM sessions
+         WHERE token_hash = ${createHash("sha256").update(owner.token).digest("hex")}`
+    : [null];
+  check(
+    "session token is stored hashed, never in plaintext",
+    Boolean(stored),
+    owner.token ? "" : "no session token — the MFA challenge above never completed",
+  );
 
   // ── Pages render ──────────────────────────────────────────────────────────
   console.log("\nPages");
@@ -146,7 +402,7 @@ async function main() {
     "/hr/gratuity", "/purchases", "/inbox", "/settings/security",
   ];
   for (const path of PAGES) {
-    const r = await get(path, owner.token);
+    const r = await get(path, owner.jar);
     check(`GET ${path}`, r.status === 200, `${r.html.length} bytes`);
   }
   // This previously asserted status === 200, which did not merely fail to catch
@@ -155,10 +411,10 @@ async function main() {
   // to the whole suite, and any status assertion was meaningless for coverage.
   check(
     "an unknown route returns 404, not a 200 placeholder",
-    (await get("/nonsense-route", owner.token)).status === 404,
+    (await get("/nonsense-route", owner.jar)).status === 404,
   );
 
-  const dash = await get("/", owner.token);
+  const dash = await get("/", owner.jar);
   check("dashboard shows real AED values", /AED&nbsp;|AED [\d,.]+/.test(dash.html));
   check("dashboard shows the action list", /Needs you today/.test(dash.html));
   check("health score is decomposed, not a bare number", /Profitability/.test(dash.html) && /Cash runway/.test(dash.html));
@@ -180,15 +436,27 @@ async function main() {
   const shop = await signIn("shop@sumon.test", "demo1234", aid);
   const property = await signIn("property@sumon.test", "demo1234", aid);
 
-  const bHtml = (await get("/", barber.token)).html;
-  const sHtml = (await get("/", shop.token)).html;
-  const pHtml = (await get("/", property.token)).html;
+  const bHtml = (await get("/", barber.jar)).html;
+  const sHtml = (await get("/", shop.jar)).html;
+  const pHtml = (await get("/", property.jar)).html;
 
   check("barber is denied revenue metrics", moneyIn(bHtml, "Revenue this month") === "—");
   check("barber cannot see the portfolio comparison", !/This month by business/.test(bHtml));
+  // The drill-down moved from a path segment (`/businesses/salon`) to a query
+  // parameter on one route (`/businesses?bu=salon`), so the old pattern matched
+  // nothing at all. Note what that would have meant had the comparison been
+  // `!includes("mobile")` instead of an exact match: a regex that finds zero
+  // links satisfies "does not link to another business" perfectly, and the
+  // check would have gone green while the sidebar was free to link anywhere.
+  // Hence the explicit length assertion — the list must be found, not merely
+  // fail to contain the wrong thing.
+  const barberBusinesses = [
+    ...new Set([...bHtml.matchAll(/href="\/businesses\?bu=([a-z_]+)"/g)].map((m) => m[1])),
+  ];
   check(
     "barber's sidebar is scoped to the salon only",
-    [...bHtml.matchAll(/href="\/businesses\/([a-z]+)"/g)].map((m) => m[1]).join(",") === "salon",
+    barberBusinesses.length === 1 && barberBusinesses[0] === "salon",
+    barberBusinesses.length ? barberBusinesses.join(",") : "NO BUSINESS LINKS FOUND",
   );
   check("sales staff are denied net profit", moneyIn(sHtml, "Net profit this month") === "—");
 
@@ -203,60 +471,60 @@ async function main() {
 
   // ── Module screens actually show data ─────────────────────────────────────
   console.log("\nModule screens");
-  const compliance = (await get("/compliance", owner.token)).html;
+  const compliance = (await get("/compliance", owner.jar)).html;
   check("compliance lists trade licences with TRNs", /VAT TRN/.test(compliance) && /CN-\d/.test(compliance));
   check("compliance flags unregistered Ejari leases", /Ejari registration/.test(compliance));
 
-  const vatPage = (await get("/accounting/vat", owner.token)).html;
+  const vatPage = (await get("/accounting/vat", owner.jar)).html;
   check("VAT page renders the FTA box layout", /VAT201 boxes/.test(vatPage) && /Box/.test(vatPage));
   check("VAT page explains irrecoverable input tax", /cannot be reclaimed/.test(vatPage));
 
-  const pl = (await get("/accounting/profit-loss", owner.token)).html;
+  const pl = (await get("/accounting/profit-loss", owner.jar)).html;
   check("P&L excludes owner drawings", /equity, not expense/.test(pl));
   check("P&L shows a group-level row for shared costs", /Group-level/.test(pl));
 
-  const grat = (await get("/hr/gratuity", owner.token)).html;
+  const grat = (await get("/hr/gratuity", owner.jar)).html;
   check("gratuity page shows days earned per employee", /Days earned/.test(grat));
   check("gratuity page offers the WPS export", /WPS file for/.test(grat));
 
-  const chq = (await get("/rentals/cheques", owner.token)).html;
+  const chq = (await get("/rentals/cheques", owner.jar)).html;
   check("cheque register shows the covered rental period", /Covers/.test(chq));
 
-  const salon = (await get("/salon", owner.token)).html;
+  const salon = (await get("/salon", owner.jar)).html;
   check("salon renders the chair timeline", /Chair 1/.test(salon) && /utilisation/i.test(salon));
 
-  const inv = (await get("/inventory", owner.token)).html;
+  const inv = (await get("/inventory", owner.jar)).html;
   check("inventory ranks reorder by days of cover", /Days of cover/.test(inv));
   check("inventory shows the IMEI register", /IMEI register/.test(inv));
 
-  const crmPage = (await get("/crm", owner.token)).html;
+  const crmPage = (await get("/crm", owner.jar)).html;
   check("CRM shows cross-business relationships", /Across 2\+ businesses/.test(crmPage));
 
   // The AI assistant is temporarily disabled (no ANTHROPIC_API_KEY provisioned).
   // Assert the disable is clean — a redirect to the dashboard, not a broken page
   // or a half-rendered feature. Restore the content checks when it is re-enabled.
-  const asst = await get("/assistant", owner.token);
+  const asst = await get("/assistant", owner.jar);
   check(
     "disabled assistant redirects to the dashboard",
     [302, 307, 308].includes(asst.status) && (asst.location ?? "").endsWith("/"),
     `status ${asst.status} → ${asst.location}`,
   );
 
-  const purchases = (await get("/purchases", owner.token)).html;
+  const purchases = (await get("/purchases", owner.jar)).html;
   check("purchases page shows what is owed to suppliers", /Owed to suppliers/.test(purchases));
   check("purchases page offers to record a supplier bill", /Record a supplier bill/.test(purchases));
 
-  const inbox = (await get("/inbox", owner.token)).html;
+  const inbox = (await get("/inbox", owner.jar)).html;
   check("inbox renders the notification centre", /Notifications/.test(inbox) && /automation rules/.test(inbox));
 
-  const secSettings = (await get("/settings/security", owner.token)).html;
+  const secSettings = (await get("/settings/security", owner.jar)).html;
   check("security settings offers MFA setup", /two-factor|Two-factor/.test(secSettings));
   check("security settings offers sign-out-everywhere", /other session/.test(secSettings));
 
   // ── WPS export ────────────────────────────────────────────────────────────
   console.log("\nWPS payroll export");
   const wpsRes = await fetch(`${BASE}/api/wps/2026-08`, {
-    headers: { cookie: `nexus_session=${owner.token}` },
+    headers: { cookie: owner.jar },
   });
   const sif = await wpsRes.text();
   const sifLines = sif.trim().split("\r\n");
@@ -278,7 +546,7 @@ async function main() {
   })());
   const barberForWps = await signIn("barber@sumon.test", "demo1234", aid);
   const deniedRes = await fetch(`${BASE}/api/wps/2026-08`, {
-    headers: { cookie: `nexus_session=${barberForWps.token}` },
+    headers: { cookie: barberForWps.jar },
   });
   check("WPS export is denied without payroll:read", deniedRes.status === 403,
     `barber got ${deniedRes.status}`);
@@ -451,6 +719,16 @@ async function main() {
     SELECT COUNT(*)::int n FROM documents WHERE currency <> 'AED'
   `;
   check("every document is denominated in AED", cur.n === 0);
+
+  // Put the owner back the way the seed left them. The enrolment above is real —
+  // it wrote an encrypted secret to `users` — and leaving it behind would hand
+  // the next run, and the security suite, a starting state the seed never
+  // produces. Cleared here rather than through the UI because the product
+  // deliberately refuses to let a required role turn its own second factor off.
+  await sql`
+    UPDATE users
+       SET mfa_secret_enc = NULL, recovery_codes_enc = NULL, mfa_enabled_at = NULL
+     WHERE email = 'owner@sumon.test'`;
 
   await sql.end();
   await app.end();
