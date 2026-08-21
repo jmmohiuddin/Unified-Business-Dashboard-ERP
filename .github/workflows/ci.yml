@@ -40,7 +40,10 @@ jobs:
       # refuses to guess. Without this line the seed falls back to the
       # placeholder in .env.example and fails on its length.
       PII_INDEX_KEY: "Ci9tNuqCeViGun1lrlOdQU4nzmphXEMm+CNNfjPba94="
-      BACKUP_ENCRYPTION_KEY: ci-only-backup-key
+      # At least 32 characters. backup.mjs used to fall back to .env.example for
+      # this, which meant the fail-closed check was satisfied by a key committed
+      # to a public repo; that fallback is gone, so CI supplies its own.
+      BACKUP_ENCRYPTION_KEY: ci-only-backup-key-long-enough-to-satisfy-the-minimum
       NEXUS_DEMO_TODAY: "2026-08-06"
       # `next start` runs in production mode, and the boot gate requires an
       # explicit answer here rather than inferring trust from the VERCEL
