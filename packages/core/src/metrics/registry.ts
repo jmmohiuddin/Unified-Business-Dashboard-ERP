@@ -36,19 +36,61 @@ function uuidArray(ids: string[]): SQL {
   return sql`ARRAY[${sql.join(ids.map((i) => sql`${i}::uuid`), sql`, `)}]`;
 }
 
-/** Resolve the effective business-unit filter: explicit params ∩ user's scope. */
-function buFilter(ctx: MetricContext, params: MetricParams, column = "business_unit_id"): SQL {
+/** Resolve the effective business-unit scope: explicit params ∩ user's scope. */
+function buScope(ctx: MetricContext, params: MetricParams): string[] | null {
   const requested = params.businessUnitIds?.length ? params.businessUnitIds : null;
   const allowed = ctx.allowedBusinessUnitIds?.length ? ctx.allowedBusinessUnitIds : null;
-  let ids: string[] | null = null;
-  if (requested && allowed) ids = requested.filter((x) => allowed.includes(x));
-  else ids = requested ?? allowed;
+  if (requested && allowed) return requested.filter((x) => allowed.includes(x));
+  return requested ?? allowed;
+}
+
+/** Resolve the effective business-unit filter: explicit params ∩ user's scope. */
+function buFilter(ctx: MetricContext, params: MetricParams, column = "business_unit_id"): SQL {
+  const ids = buScope(ctx, params);
   // null scope = unrestricted. An EMPTY list means the user is scoped to no
   // business at all, which must return nothing rather than everything — the
   // difference between a locked-down account and a full data leak.
   if (!ids) return sql`TRUE`;
   if (ids.length === 0) return sql`FALSE`;
   return sql`${sql.raw(column)} = ANY(${uuidArray(ids)})`;
+}
+
+/**
+ * The same filter for a ledger table, where a NULL business unit means "group".
+ *
+ * `journal_lines.business_unit_id` is nullable: a bank transfer or a head-office
+ * accrual belongs to the group, not to a branch. Filtering those rows out would
+ * make a branch manager's cash balance and running cost smaller than the money
+ * that actually exists, so unattributed lines are included in every scope. This
+ * is the shape `cash_balance` and `net_profit_mtd` already use; it is factored
+ * out here so the composite metrics cannot quietly disagree with the tiles they
+ * are composed from.
+ */
+function buFilterNullable(ctx: MetricContext, params: MetricParams, column: string): SQL {
+  const ids = buScope(ctx, params);
+  if (!ids) return sql`TRUE`;
+  return sql`(${sql.raw(column)} IS NULL OR ${buFilter(ctx, params, column)})`;
+}
+
+/**
+ * Scope a table that carries no business unit of its own.
+ *
+ * `parties` is shared across the whole group — one customer buys a handset from
+ * the shop and books a haircut at the salon — so the attribution lives in the
+ * `party_business_units` link table. The predicate must collapse to TRUE when
+ * no scope is in force rather than to "has at least one link row", or an
+ * unrestricted owner's customer count would silently shed every party that was
+ * never attributed to a business.
+ */
+function partyBuFilter(ctx: MetricContext, params: MetricParams, alias = "p"): SQL {
+  const ids = buScope(ctx, params);
+  if (!ids) return sql`TRUE`;
+  if (ids.length === 0) return sql`FALSE`;
+  return sql`EXISTS (
+    SELECT 1 FROM party_business_units pbu
+     WHERE pbu.party_id = ${sql.raw(alias)}.id
+       AND pbu.business_unit_id = ANY(${uuidArray(ids)})
+  )`;
 }
 
 function monthStart(iso: string): string {
@@ -168,7 +210,7 @@ const netProfitMtd = defineMetric({
       WHERE a.type IN ('income', 'expense')
         AND j.posting_date BETWEEN ${pStart}::date AND ${ctx.today}::date
         AND NOT (j.posting_date > ${pEnd}::date AND j.posting_date < ${monthStart(ctx.today)}::date)
-        AND (jl.business_unit_id IS NULL OR ${buFilter(ctx, params, "jl.business_unit_id")})
+        AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       GROUP BY 1
     `);
     const cur = rows.find((r) => r.period === "cur");
@@ -244,7 +286,7 @@ const cashBalance = defineMetric({
       FROM journal_lines jl
       JOIN accounts a ON a.id = jl.account_id
       WHERE a.system_key IN ('CASH','BANK','WALLET')
-        AND (jl.business_unit_id IS NULL OR ${buFilter(ctx, params, "jl.business_unit_id")})
+        AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       GROUP BY a.system_key
     `);
     const value = rows.reduce((t, r) => t + num(r.balance), 0);
@@ -390,7 +432,9 @@ const cashFlowForecast = defineMetric({
     "Projected closing cash in 30 days = current cash + receivables due in the window (weighted " +
     "by each customer's historical payment reliability) + scheduled rent + installments − payables " +
     "due − a 3-month average of recurring operating costs. Deliberately arithmetic and explainable " +
-    "rather than a learned model: an owner will not act on a number they cannot reconstruct.",
+    "rather than a learned model: an owner will not act on a number they cannot reconstruct. " +
+    "Scoped to the selected businesses; ledger lines booked to the group rather than to a branch " +
+    "are included in every scope, because that cash and that cost are real for everyone.",
   unit: "currency",
   polarity: "higher_is_better",
   permission: "report:read",
@@ -404,22 +448,26 @@ const cashFlowForecast = defineMetric({
         SELECT COALESCE(SUM(jl.base_debit - jl.base_credit),0) v
         FROM journal_lines jl JOIN accounts a ON a.id = jl.account_id
         WHERE a.system_key IN ('CASH','BANK','WALLET')
+          AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       ),
       inflow AS (
         SELECT COALESCE(SUM(amount_due),0) v FROM documents
         WHERE direction='in' AND amount_due>0 AND status NOT IN ('cancelled','void','draft')
           AND due_date BETWEEN ${ctx.today}::date AND ${horizon}::date
+          AND ${buFilter(ctx, params)}
       ),
       -- Overdue money is not worthless, but it is not worth face value either.
       overdue AS (
         SELECT COALESCE(SUM(amount_due * 0.45),0) v FROM documents
         WHERE direction='in' AND amount_due>0 AND status NOT IN ('cancelled','void','draft')
           AND due_date < ${ctx.today}::date
+          AND ${buFilter(ctx, params)}
       ),
       outflow AS (
         SELECT COALESCE(SUM(amount_due),0) v FROM documents
         WHERE direction='out' AND amount_due>0 AND status NOT IN ('cancelled','void','draft')
           AND (due_date IS NULL OR due_date <= ${horizon}::date)
+          AND ${buFilter(ctx, params)}
       ),
       opex AS (
         SELECT COALESCE(SUM(jl.base_debit - jl.base_credit),0) / 3.0 v
@@ -428,6 +476,7 @@ const cashFlowForecast = defineMetric({
         JOIN accounts a ON a.id = jl.account_id
         WHERE a.type='expense' AND a.system_key NOT IN ('COGS','MATERIALS')
           AND j.posting_date >= ${shiftDays(ctx.today, -90)}::date
+          AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       )
       SELECT (SELECT v FROM cash) cash, (SELECT v FROM inflow) inflow,
              (SELECT v FROM overdue) overdue_recoverable, (SELECT v FROM outflow) outflow,
@@ -468,7 +517,7 @@ const customersTotal = defineMetric({
         COUNT(*) FILTER (WHERE p.visit_count > 0)::int AS total,
         COUNT(*) FILTER (WHERE p.created_at >= ${monthStart(ctx.today)}::date)::int AS new_mtd,
         COUNT(*) FILTER (WHERE p.visit_count > 1)::int AS returning
-      FROM parties p WHERE p.is_customer = true
+      FROM parties p WHERE p.is_customer = true AND ${partyBuFilter(ctx, params)}
     `);
     const r = rows[0]!;
     return {
@@ -495,15 +544,17 @@ const churnRisk = defineMetric({
   aiExposed: true,
   async run(ctx, params) {
     const rows = await ctx.tx.execute<{ id: string; display_name: string; ltv: string; recency: number }>(sql`
-      SELECT id, display_name, lifetime_value AS ltv, rfm_recency AS recency
-      FROM parties
-      WHERE is_customer = true AND churn_risk IN ('medium','high') AND visit_count >= 2
-      ORDER BY lifetime_value DESC
+      SELECT p.id, p.display_name, p.lifetime_value AS ltv, p.rfm_recency AS recency
+      FROM parties p
+      WHERE p.is_customer = true AND p.churn_risk IN ('medium','high') AND p.visit_count >= 2
+        AND ${partyBuFilter(ctx, params)}
+      ORDER BY p.lifetime_value DESC
       LIMIT ${params.limit ?? 8}
     `);
     const countRows = await ctx.tx.execute<{ n: number }>(sql`
-      SELECT COUNT(*)::int n FROM parties
-      WHERE is_customer = true AND churn_risk IN ('medium','high') AND visit_count >= 2
+      SELECT COUNT(*)::int n FROM parties p
+      WHERE p.is_customer = true AND p.churn_risk IN ('medium','high') AND p.visit_count >= 2
+        AND ${partyBuFilter(ctx, params)}
     `);
     return {
       value: num(countRows[0]?.n), unit: "count" as const,
@@ -537,8 +588,12 @@ const appointmentsToday = defineMetric({
         AND ${buFilter(ctx, params)}
       GROUP BY 1
     `);
+    // Scoped for the same reason the bookings above are: an unfiltered chair
+    // count is a denominator drawn from businesses whose bookings were excluded
+    // from the numerator, which reports the salon as half-empty when it is full.
     const chairs = await ctx.tx.execute<{ n: number }>(sql`
-      SELECT COUNT(*)::int n FROM resources WHERE kind = 'chair' AND is_active = true
+      SELECT COUNT(*)::int n FROM resources
+       WHERE kind = 'chair' AND is_active = true AND ${buFilter(ctx, params)}
     `);
     const bookedMinutes = rows
       .filter((r) => !["cancelled", "no_show"].includes(r.status))
@@ -686,11 +741,16 @@ const lowStockItems = defineMetric({
       id: string; name: string; available: string; reorder_point: string;
       reorder_qty: string; daily_rate: string; cost: string;
     }>(sql`
+      -- Scoped to the same businesses as the warehouses below. A group-wide
+      -- sales rate divided into one shop's stock is not that shop's days of
+      -- cover: it would rank the shop's reorder list by how fast the *group*
+      -- sells the item, and order in stock the shop cannot move.
       WITH sales AS (
         SELECT dl.item_id, SUM(dl.quantity) / 30.0 AS daily_rate
         FROM document_lines dl JOIN documents d ON d.id = dl.document_id
         WHERE d.doc_type = 'invoice' AND d.issue_date >= ${shiftDays(ctx.today, -30)}::date
           AND d.status NOT IN ('cancelled','void','draft')
+          AND ${buFilter(ctx, params, "d.business_unit_id")}
         GROUP BY 1
       )
       SELECT i.id, i.name,
@@ -795,7 +855,8 @@ const businessHealthScore = defineMetric({
     "A 0–100 composite of five weighted signals: profitability (30), cash runway (25), receivable " +
     "quality (20), growth (15) and operational load such as SLA breaches and vacancy (10). Every " +
     "component is returned with its own sub-score so the headline number is always explainable — " +
-    "a health score you cannot decompose is astrology.",
+    "a health score you cannot decompose is astrology. Every component honours the selected " +
+    "businesses, so a branch manager scores their branch rather than the group.",
   unit: "score",
   polarity: "higher_is_better",
   permission: "dashboard:read",
@@ -810,41 +871,49 @@ const businessHealthScore = defineMetric({
         SELECT COALESCE(SUM(subtotal),0) revenue FROM documents
         WHERE doc_type='invoice' AND status NOT IN ('cancelled','void','draft')
           AND issue_date BETWEEN ${monthStart(ctx.today)}::date AND ${ctx.today}::date
+          AND ${buFilter(ctx, params)}
       ),
       prior AS (
         SELECT COALESCE(SUM(subtotal),0) revenue FROM documents
         WHERE doc_type='invoice' AND status NOT IN ('cancelled','void','draft')
           AND issue_date BETWEEN ${prevMonthStart(ctx.today)}::date
                              AND ${shiftDays(prevMonthStart(ctx.today), Number(ctx.today.slice(8, 10)) - 1)}::date
+          AND ${buFilter(ctx, params)}
       ),
       pl AS (
         SELECT COALESCE(SUM(CASE WHEN a.type='income' THEN jl.base_credit - jl.base_debit
                                  ELSE -(jl.base_debit - jl.base_credit) END),0) profit
         FROM journal_lines jl JOIN journals j ON j.id=jl.journal_id JOIN accounts a ON a.id=jl.account_id
         WHERE a.type IN ('income','expense') AND j.posting_date >= ${monthStart(ctx.today)}::date
+          AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       ),
       cash AS (
         SELECT COALESCE(SUM(jl.base_debit - jl.base_credit),0) v
         FROM journal_lines jl JOIN accounts a ON a.id=jl.account_id
         WHERE a.system_key IN ('CASH','BANK','WALLET')
+          AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       ),
       opex AS (
         SELECT COALESCE(SUM(jl.base_debit - jl.base_credit),0)/3.0 v
         FROM journal_lines jl JOIN journals j ON j.id=jl.journal_id JOIN accounts a ON a.id=jl.account_id
         WHERE a.type='expense' AND j.posting_date >= ${shiftDays(ctx.today, -90)}::date
+          AND ${buFilterNullable(ctx, params, "jl.business_unit_id")}
       ),
       ar AS (
         SELECT COALESCE(SUM(amount_due),0) total,
                COALESCE(SUM(amount_due) FILTER (WHERE due_date < ${ctx.today}::date),0) overdue
         FROM documents WHERE direction='in' AND amount_due>0 AND status NOT IN ('cancelled','void','draft')
+          AND ${buFilter(ctx, params)}
       ),
       jobs AS (
         SELECT COUNT(*)::numeric open_jobs,
                COUNT(*) FILTER (WHERE complete_by < now())::numeric breached
         FROM jobs WHERE status IN ('request','quoted','scheduled','dispatched','in_progress','on_hold')
+          AND ${buFilter(ctx, params)}
       ),
       un AS (
-        SELECT COUNT(*)::numeric units, COUNT(*) FILTER (WHERE status<>'occupied')::numeric vacant FROM units
+        SELECT COUNT(*)::numeric units, COUNT(*) FILTER (WHERE status<>'occupied')::numeric vacant
+        FROM units WHERE ${buFilter(ctx, params)}
       )
       SELECT (SELECT revenue FROM cur) revenue, (SELECT profit FROM pl) profit,
              (SELECT v FROM cash) cash, (SELECT v FROM opex) opex,
@@ -903,28 +972,48 @@ const staffPerformance = defineMetric({
   id: "staff_performance",
   title: "Top Performing Staff",
   description:
-    "Employees ranked by revenue attributed to them this month, with jobs or services completed " +
-    "and average customer rating where available.",
+    "Employees ranked by net revenue (excluding VAT) attributed to them on invoices issued " +
+    "between the 1st of the current month and today, with jobs or services completed and average " +
+    "customer rating where available.",
   unit: "currency",
   polarity: "higher_is_better",
   permission: "employee:read",
   aiExposed: true,
+  /**
+   * Two things about this statement are load-bearing, and both were wrong.
+   *
+   * The date predicate belongs in the WHERE clause with an INNER JOIN, not in
+   * the ON clause of an outer join. `LEFT JOIN documents d ON d.id = dl.document_id
+   * AND d.issue_date BETWEEN …` does not filter rows — it decides which rows get
+   * a matching `d`. Every line the employee ever billed still survived the join
+   * with `d` NULL and still landed in the SUM, so a metric titled "this month"
+   * ranked people by lifetime takings and a stylist who left six months ago
+   * outranked this month's top earner.
+   *
+   * And the basis is `line_total − tax_amount`, not `line_total`. `line_total`
+   * is VAT-inclusive, while every other revenue figure in this registry sums
+   * `documents.subtotal`. Ranking staff on a VAT-inclusive number next to a
+   * VAT-exclusive revenue tile invites exactly the comparison it will not
+   * survive; the two now reconcile.
+   */
   async run(ctx, params) {
     const rows = await ctx.tx.execute<{
       id: string; full_name: string; designation: string; revenue: string; jobs: number; rating: string;
     }>(sql`
       SELECT e.id, e.full_name, e.designation,
-             COALESCE(SUM(dl.line_total), 0) revenue,
+             SUM(dl.line_total - dl.tax_amount) revenue,
              COUNT(DISTINCT dl.document_id)::int jobs,
              e.avg_customer_rating rating
       FROM employees e
-      LEFT JOIN document_lines dl ON dl.employee_id = e.id
-      LEFT JOIN documents d ON d.id = dl.document_id
-        AND d.issue_date BETWEEN ${monthStart(ctx.today)}::date AND ${ctx.today}::date
+      JOIN document_lines dl ON dl.employee_id = e.id
+      JOIN documents d ON d.id = dl.document_id
+      WHERE e.status = 'active'
+        AND d.doc_type = 'invoice'
         AND d.status NOT IN ('cancelled','void','draft')
-      WHERE e.status = 'active' AND ${buFilter(ctx, params, "e.primary_business_unit_id")}
+        AND d.issue_date BETWEEN ${monthStart(ctx.today)}::date AND ${ctx.today}::date
+        AND ${buFilter(ctx, params, "e.primary_business_unit_id")}
       GROUP BY e.id, e.full_name, e.designation, e.avg_customer_rating
-      HAVING COALESCE(SUM(dl.line_total),0) > 0
+      HAVING SUM(dl.line_total - dl.tax_amount) > 0
       ORDER BY 4 DESC LIMIT ${params.limit ?? 6}
     `);
     return {
@@ -942,27 +1031,61 @@ const channelPerformance = defineMetric({
   id: "channel_performance",
   title: "Sales by Channel",
   description:
-    "Online revenue split by sales channel (own website, marketplace, social), net of marketplace " +
-    "commission. Answers whether the marketplace is actually worth its take rate.",
+    "Online net revenue (excluding VAT) this month split by sales channel (own website, " +
+    "marketplace, social), after deducting each channel's commission at the rate on its " +
+    "`channels` record. Answers whether the marketplace is actually worth its take rate: the " +
+    "gross figure and the commission withheld are both returned alongside the net.",
   unit: "currency",
   polarity: "higher_is_better",
   permission: "dashboard:read",
   requiresModules: ["ecommerce"],
   aiExposed: true,
+  /**
+   * The commission is the whole point of this metric and it was not being taken.
+   *
+   * A channel breakdown that reports gross revenue tells you noon.com is your
+   * biggest channel, which is the answer you already had. Deducting the 15% take
+   * rate is what turns it into a decision: at equal gross, the own website keeps
+   * every dirham and the marketplace keeps 85 fils.
+   *
+   * Matched on `channels.name` because that is the link the sales path actually
+   * writes — `document.metadata.channel` holds the channel's name (see the seed's
+   * `channelSource`). `documents.channel_id` exists but is never populated, so a
+   * key join is not available yet; the business-unit predicate keeps the name
+   * match from crossing businesses. A channel with no matching record is treated
+   * as commission-free rather than dropped, so its revenue is never lost from the
+   * total — it is simply reported at gross.
+   */
   async run(ctx, params) {
-    const rows = await ctx.tx.execute<{ channel: string; revenue: string; orders: number }>(sql`
+    // The subtraction is done in SQL, on `numeric`, so the net figure is an
+    // exact decimal rather than the difference of two floats.
+    const rows = await ctx.tx.execute<{
+      channel: string; net: string; gross: string; commission: string; rate: string | null; orders: number;
+    }>(sql`
       SELECT COALESCE(d.metadata->>'channel', 'Direct') AS channel,
-             SUM(d.subtotal) revenue, COUNT(*)::int orders
+             SUM(d.subtotal - d.subtotal * COALESCE(c.commission_rate, 0)) net,
+             SUM(d.subtotal) gross,
+             SUM(d.subtotal * COALESCE(c.commission_rate, 0)) commission,
+             MAX(c.commission_rate) rate,
+             COUNT(*)::int orders
       FROM documents d
+      LEFT JOIN channels c
+        ON c.name = d.metadata->>'channel'
+       AND c.business_unit_id = d.business_unit_id
       WHERE d.doc_type='invoice' AND d.status NOT IN ('cancelled','void','draft')
         AND d.issue_date BETWEEN ${monthStart(ctx.today)}::date AND ${ctx.today}::date
         AND d.metadata ? 'channel' AND ${buFilter(ctx, params, "d.business_unit_id")}
       GROUP BY 1 ORDER BY 2 DESC
     `);
     return {
-      value: rows.reduce((t, r) => t + num(r.revenue), 0), unit: "currency" as const,
-      breakdown: rows.map((r) => ({ key: r.channel, label: r.channel, value: num(r.revenue),
-        meta: { orders: num(r.orders) } })),
+      value: rows.reduce((t, r) => t + num(r.net), 0), unit: "currency" as const,
+      breakdown: rows.map((r) => ({
+        key: r.channel, label: r.channel, value: num(r.net),
+        meta: {
+          orders: num(r.orders), gross: num(r.gross), commission: num(r.commission),
+          commissionRate: r.rate === null ? null : num(r.rate),
+        },
+      })),
       drilldownHref: "/businesses",
     };
   },

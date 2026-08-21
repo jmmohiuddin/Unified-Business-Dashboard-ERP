@@ -4,6 +4,7 @@
     { "path": "/api/cron/snapshots", "schedule": "50 20 * * *" },
     { "path": "/api/cron/briefing", "schedule": "5 2 * * *" },
     { "path": "/api/cron/automation", "schedule": "0 4 * * *" },
-    { "path": "/api/cron/outbox", "schedule": "30 4 * * *" }
+    { "path": "/api/cron/outbox", "schedule": "30 4 * * *" },
+    { "path": "/api/cron/maintenance", "schedule": "40 22 * * *" }
   ]
 }
